@@ -12,6 +12,142 @@ PIECE_VALUES = {
     chess.PAWN: 100.0
 }
 
+MIDDLEGAME_BONUS = {
+    chess.PAWN: [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    chess.KNIGHT: [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ],
+    chess.BISHOP: [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    chess.ROOK: [
+        0,  0,  0,  5,  5,  0,  0,  0,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    chess.QUEEN: [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    chess.KING: [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+}
+ENDGAME_BONUS = {
+    chess.PAWN: [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        80, 80, 80, 80, 80, 80, 80, 80,
+        40, 40, 50, 60, 60, 50, 40, 40,
+        20, 20, 30, 40, 40, 30, 20, 20,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 20, 20, 10,  5,  5,
+        0,  0,  0,  0,  0,  0,  0,  0,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    chess.KNIGHT: [
+        -40,-30,-20,-20,-20,-20,-30,-40,
+        -30,-10,  0,  5,  5,  0,-10,-30,
+        -20,  5, 10, 15, 15, 10,  5,-20,
+        -20, 10, 15, 20, 20, 15, 10,-20,
+        -20, 10, 15, 20, 20, 15, 10,-20,
+        -20,  5, 10, 15, 15, 10,  5,-20,
+        -30,-10,  0,  5,  5,  0,-10,-30,
+        -40,-30,-20,-20,-20,-20,-30,-40
+    ],
+    chess.BISHOP: [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    chess.ROOK: [
+        0,  0,  5, 10, 10,  5,  0,  0,
+        0,  5, 10, 15, 15, 10,  5,  0,
+        0,  5, 10, 15, 15, 10,  5,  0,
+        0,  5, 10, 15, 15, 10,  5,  0,
+        0,  5, 10, 15, 15, 10,  5,  0,
+        0,  5, 10, 15, 15, 10,  5,  0,
+        0,  0,  5, 10, 10,  5,  0,  0,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    chess.QUEEN: [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    chess.KING: [
+        -50,-40,-30,-20,-20,-30,-40,-50,
+        -30,-20,-10,  0,  0,-10,-20,-30,
+        -30,-10, 20, 30, 30, 20,-10,-30,
+        -30,-10, 30, 40, 40, 30,-10,-30,
+        -30,-10, 30, 40, 40, 30,-10,-30,
+        -30,-10, 20, 30, 30, 20,-10,-30,
+        -30,-30,  0,  0,  0,  0,-30,-30,
+        -50,-30,-30,-30,-30,-30,-30,-50
+    ]
+}
+
+MIRROR_BOARD = [
+    56, 57, 58, 59, 60, 61, 62, 63,
+    48, 49, 50, 51, 52, 53, 54, 55,
+    40, 41, 42, 43, 44, 45, 46, 47,
+    32, 33, 34, 35, 36, 37, 38, 39,
+    24, 25, 26, 27, 28, 29, 30, 31,
+    16, 17, 18, 19, 20, 21, 22, 23,
+    8,  9,  10, 11, 12, 13, 14, 15,
+    0,  1,  2,  3,  4,  5,  6,  7,
+]
+
 DEPTH = 4
 USE_UCI = "--uci" in sys.argv
 
@@ -77,31 +213,42 @@ def evaluate(b: chess.Board) -> float:
 
     for square in white_bitboard:
         piece= b[square]
-        evaluation += PIECE_VALUES[piece.piece_type] # pyright: ignore[reportOptionalMemberAccess]
+        psqb = MIDDLEGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] # type: ignore
+        evaluation += PIECE_VALUES[piece.piece_type] + psqb # type: ignore
 
     for square in black_bitboard:
         piece = b[square]
-        evaluation -= PIECE_VALUES[piece.piece_type] # pyright: ignore[reportOptionalMemberAccess]
+        psqb = MIDDLEGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] # type: ignore
+        evaluation -= PIECE_VALUES[piece.piece_type] + psqb # type: ignore
 
     return evaluation
 
 def search_moves(b: chess.Board, depth: int) -> float:
+    if b in chess.CHECKMATE:
+        if b.turn == chess.BLACK:
+            return math.inf
+        return -math.inf
+    elif b in chess.DRAW:
+        return 0.0
+    
     if depth == 0:
         return evaluate(b)
     
     is_black = b.turn == chess.BLACK
     
-    best_eval = -math.inf
+    best_eval = math.inf if is_black else -math.inf
+
     for move in b.legal_moves():
         b.apply(move)
         evaluation = search_moves(b, depth - 1)
         b.undo()
 
-        if not is_black:
-            evaluation = -evaluation
-
-        if evaluation > best_eval:
-            best_eval = evaluation
+        if is_black:
+            if evaluation <= best_eval:
+                best_eval = evaluation
+        else:
+            if evaluation >= best_eval:
+                best_eval = evaluation
     
     return best_eval
 
@@ -110,17 +257,20 @@ def get_best_move(b: chess.Board, depth: int) -> chess.Move | None:
     is_black = b.turn == chess.BLACK
     
     best_move = None
-    best_eval = -math.inf
+    best_eval = math.inf if is_black else -math.inf
 
     for move in b.legal_moves():
         b.apply(move)
-        evaluation = -search_moves(b, depth - 1)
+        evaluation = search_moves(b, depth - 1)
         b.undo()
         if is_black:
-            evaluation = -evaluation
-        if evaluation > best_eval:
-            best_eval = evaluation
-            best_move = move
+            if evaluation <= best_eval:
+                best_eval = evaluation
+                best_move = move
+        else:
+            if evaluation >= best_eval:
+                best_eval = evaluation
+                best_move = move
 
     return best_move
 
@@ -130,6 +280,8 @@ def main() -> None:
     while len(board.legal_moves()) > 0:
 
         best_move = get_best_move(board, DEPTH)
+        if best_move == None:
+            break
         print(best_move)
         board.apply(best_move)
 
