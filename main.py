@@ -2,6 +2,7 @@ import bulletchess as chess
 import math
 import sys
 import random
+import time
 
 PIECE_VALUES = {
     chess.KING: 60000.0,
@@ -10,6 +11,15 @@ PIECE_VALUES = {
     chess.BISHOP: 320.0,
     chess.KNIGHT: 290.0,
     chess.PAWN: 100.0
+}
+
+PHASE_VALUES = {
+    chess.KING: 0,
+    chess.QUEEN: 4,
+    chess.ROOK: 2,
+    chess.BISHOP: 1,
+    chess.KNIGHT: 1,
+    chess.PAWN: 0
 }
 
 MIDDLEGAME_BONUS = {
@@ -148,8 +158,11 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
-DEPTH = 4
+TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
+
+transposition_table: dict[int, float] = {}
+tt_depth: dict[int, int] = {}
 
 def uci_loop() -> None:
     sys.stdout.reconfigure(line_buffering=True) # pyright: ignore[reportAttributeAccessIssue]
@@ -186,7 +199,7 @@ def uci_loop() -> None:
                     board.apply(chess.Move.from_uci(move))
 
         elif parts[0] == "go":
-            move = get_best_move(board, DEPTH)
+            move = get_best_move(board, TIME_LIMIT)
             if move is None:
                 move = random.choice(board.legal_moves())
             
@@ -200,9 +213,7 @@ def uci_loop() -> None:
 
 def evaluate(b: chess.Board) -> float:
     if b in chess.CHECKMATE:
-        if b.turn == chess.BLACK:
-            return math.inf
-        return -math.inf
+        return -100000.0
     elif b in chess.DRAW:
         return 0.0
 
@@ -211,78 +222,108 @@ def evaluate(b: chess.Board) -> float:
     white_bitboard = b[chess.WHITE]
     black_bitboard = b[chess.BLACK]
 
+    phase = 0
+    for square in white_bitboard | black_bitboard:
+        phase += PHASE_VALUES[b[square].piece_type] # type: ignore
+
+    middlegame_percentage = (phase / 24)
+    endgame_percentage = ((24 - phase) / 24)
+
     for square in white_bitboard:
         piece= b[square]
-        psqb = MIDDLEGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] # type: ignore
+        index = MIRROR_BOARD[square.index()]
+        psqb = MIDDLEGAME_BONUS[piece.piece_type][index] * middlegame_percentage # type: ignore
+        psqb += ENDGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage # type: ignore
         evaluation += PIECE_VALUES[piece.piece_type] + psqb # type: ignore
 
     for square in black_bitboard:
         piece = b[square]
-        psqb = MIDDLEGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] # type: ignore
+        index = square.index()
+        psqb = MIDDLEGAME_BONUS[piece.piece_type][index] * middlegame_percentage # type: ignore
+        psqb += ENDGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage # type: ignore
         evaluation -= PIECE_VALUES[piece.piece_type] + psqb # type: ignore
 
-    return evaluation
+    return evaluation if b.turn == chess.WHITE else -evaluation
 
-def search_moves(b: chess.Board, depth: int) -> float:
+def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float) -> float:
+    global transposition_table, tt_depth, hits
+    if time.perf_counter() >= end:
+        raise TimeoutError
     if b in chess.CHECKMATE:
-        if b.turn == chess.BLACK:
-            return math.inf
-        return -math.inf
+        return -100000.0 - depth
     elif b in chess.DRAW:
         return 0.0
     
     if depth == 0:
         return evaluate(b)
     
-    is_black = b.turn == chess.BLACK
-    
-    best_eval = math.inf if is_black else -math.inf
+    b_hash = hash(b)
+
+    if b_hash in transposition_table:
+        if tt_depth[b_hash] >= depth:
+            return transposition_table[b_hash]
 
     for move in b.legal_moves():
         b.apply(move)
-        evaluation = search_moves(b, depth - 1)
+        evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
         b.undo()
 
-        if is_black:
-            if evaluation <= best_eval:
-                best_eval = evaluation
-        else:
-            if evaluation >= best_eval:
-                best_eval = evaluation
+        if evaluation >= beta:
+            return beta
+        if evaluation > alpha:
+            alpha = evaluation
     
-    return best_eval
+    transposition_table[b_hash] = alpha
+    tt_depth[b_hash] = depth
 
-def get_best_move(b: chess.Board, depth: int) -> chess.Move | None:
+    return alpha
 
-    is_black = b.turn == chess.BLACK
+def get_best_move(b: chess.Board, time_limit: int) -> chess.Move | None:
+
+    end = time.perf_counter() + time_limit
     
     best_move = None
-    best_eval = math.inf if is_black else -math.inf
 
-    for move in b.legal_moves():
-        b.apply(move)
-        evaluation = search_moves(b, depth - 1)
-        b.undo()
-        if is_black:
-            if evaluation <= best_eval:
-                best_eval = evaluation
-                best_move = move
-        else:
-            if evaluation >= best_eval:
-                best_eval = evaluation
-                best_move = move
+    try:
+        for depth in range(1, 100):
+            cur_best_move = None
+            b_check = b.copy()
+
+            if not USE_UCI:
+                print(f"Depth: {depth}", end = "\r")
+
+            best_eval = -math.inf
+
+            for move in b.legal_moves():
+                b_check.apply(move)
+                evaluation = -search_moves(b_check, depth - 1, -math.inf, math.inf, end)
+                b_check.undo()
+
+                if evaluation > best_eval:
+                    best_eval = evaluation
+                    cur_best_move = move
+                
+            best_move = cur_best_move
+    except KeyboardInterrupt:
+        raise
+    except TimeoutError:
+        pass
 
     return best_move
 
 def main() -> None:
+    global hits
     board = chess.Board()
 
-    while len(board.legal_moves()) > 0:
+    print(board.pretty())
 
-        best_move = get_best_move(board, DEPTH)
+    hits = 0
+    while board not in chess.CHECKMATE and board not in chess.DRAW:
+        best_move = get_best_move(board, TIME_LIMIT)
+        print()
+        print(f"Hits: {hits} / Nodes: {len(transposition_table.keys())}")
         if best_move == None:
             break
-        print(best_move)
         board.apply(best_move)
 
         print(board.pretty())
