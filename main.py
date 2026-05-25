@@ -395,7 +395,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None, float]:
+def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None, float | str]:
 
     end = time.perf_counter() + time_limit
     
@@ -428,6 +428,9 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
             best_move = cur_best_move
             best_eval = cur_best_eval
 
+            if best_eval > 90000.0:
+                return (best_move, f"M{depth // 2}")
+
     except KeyboardInterrupt:
         raise
     except TimeoutError:
@@ -436,11 +439,10 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
     return (best_move, best_eval)
 
 def main() -> None:
-    board = chess.Board()
+    board = chess.Board.from_fen("8/1K6/2r5/2k5/8/8/8/8 w - - 0 1")
 
     print(board.pretty())
 
-    hits = 0
     while board not in chess.CHECKMATE and board not in chess.DRAW:
         best_move = get_input(board)
         board.apply(best_move)
