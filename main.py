@@ -322,13 +322,14 @@ def order_moves(b: chess.Board) -> list[chess.Move]:
         new_values.insert(index, -value)
     return new_moves
 
-def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags # Add tt_flags
+def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
+    global transposition_table, tt_depth, tt_bestmove, tt_flags
     
     if time.perf_counter() >= end:
         raise TimeoutError
+
     if b in chess.CHECKMATE:
-        return -100000.0 - depth
+        return -100000.0 + ply
     elif b in chess.DRAW:
         return 0.0
     
@@ -336,16 +337,19 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         return evaluate(b)
     
     b_hash = hash(b)
-    
     original_alpha = alpha
-
     first_move = None
     best_move = None
-    
+
     if b_hash in transposition_table and tt_depth[b_hash] >= depth:
         score = transposition_table[b_hash]
-        flag = tt_flags[b_hash]
+
+        if 90000.0 < score < math.inf:
+            score -= ply
+        elif -math.inf < score < -90000.0:
+            score += ply
         
+        flag = tt_flags[b_hash]
         if flag == Flag.EXACT:
             return score
         elif flag == Flag.LOWER and score >= beta:
@@ -357,7 +361,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         
         if first_move is not None and first_move in b.legal_moves():
             b.apply(first_move)
-            evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
+            evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
             b.undo()
 
             if evaluation >= beta:
@@ -370,11 +374,17 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         if move == first_move:
             continue
         b.apply(move)
-        evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
+        evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
         b.undo()
 
         if evaluation >= beta:
-            transposition_table[b_hash] = beta
+            tt_score = beta
+            if 90000.0 < tt_score < math.inf:
+                tt_score += ply
+            elif -math.inf < tt_score < -90000.0:
+                tt_score -= ply
+                
+            transposition_table[b_hash] = tt_score
             tt_depth[b_hash] = depth
             tt_bestmove[b_hash] = move
             tt_flags[b_hash] = Flag.LOWER
@@ -384,7 +394,13 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             alpha = evaluation
             best_move = move
     
-    transposition_table[b_hash] = alpha
+    tt_score = alpha
+    if 90000.0 < tt_score < math.inf:
+        tt_score += ply
+    elif -math.inf < tt_score < -90000.0:
+        tt_score -= ply
+
+    transposition_table[b_hash] = tt_score
     tt_depth[b_hash] = depth
     tt_bestmove[b_hash] = best_move
     
@@ -411,7 +427,12 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
                 print(f"Depth: {depth}", end = "\r")
 
             cur_best_eval = -math.inf
-            alpha = -math.inf 
+            alpha = -math.inf
+
+            legal_moves = b.legal_moves()
+            if best_move is not None:
+                legal_moves.remove(best_move)
+                legal_moves.insert(0, best_move)
 
             for move in b.legal_moves():
                 b_check.apply(move)
@@ -428,8 +449,11 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
             best_move = cur_best_move
             best_eval = cur_best_eval
 
-            if best_eval > 90000.0:
-                return (best_move, f"M{depth // 2}")
+            if abs(best_eval) > 90000.0:
+                plies_to_mate = 100000.0 - abs(best_eval)
+                moves_to_mate = math.ceil(plies_to_mate / 2)
+                prefix = "-" if best_eval < 0 else ""
+                return (best_move, f"{prefix}M{moves_to_mate}")
 
     except KeyboardInterrupt:
         raise
