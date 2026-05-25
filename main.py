@@ -3,6 +3,7 @@ import math
 import sys
 import random
 import time
+import bisect
 
 from enum import IntEnum, auto
 
@@ -185,6 +186,7 @@ MIRROR_BOARD = [
 
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
+CASTLE_BONUS = 50
 
 transposition_table: dict[int, float] = {}
 tt_depth: dict[int, int] = {}
@@ -236,7 +238,7 @@ def uci_loop() -> None:
                     board.apply(chess.Move.from_uci(move))
 
         elif parts[0] == "go":
-            move = get_best_move(board, TIME_LIMIT)
+            move = get_best_move(board, TIME_LIMIT)[0]
             if move is None:
                 move = random.choice(board.legal_moves())
             
@@ -249,6 +251,7 @@ def uci_loop() -> None:
             break
 
 def evaluate(b: chess.Board) -> float:
+    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, MOBILITY_BONUS_EG, MOBILITY_BONUS_MG
     if b in chess.CHECKMATE:
         return -100000.0
     elif b in chess.DRAW:
@@ -301,6 +304,24 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation if b.turn == chess.WHITE else -evaluation
 
+def order_moves(b: chess.Board) -> list[chess.Move]:
+    global PIECE_VALUES, CASTLE_BONUS
+    new_moves: list[chess.Move] = []
+    new_values: list[float] = []
+    for move in b.legal_moves():
+        if move.is_capture(b):
+            value = PIECE_VALUES[b[move.destination].piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
+        else:
+            value = 0.0
+        if move.is_promotion():
+            value += PIECE_VALUES[move.promotion] # type: ignore
+        if move.is_castling(b):
+            value += CASTLE_BONUS
+        index = bisect.bisect(new_values, -value)
+        new_moves.insert(index, move)
+        new_values.insert(index, -value)
+    return new_moves
+
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float) -> float:
     global transposition_table, tt_depth, tt_bestmove, tt_flags # Add tt_flags
     
@@ -345,7 +366,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 alpha = evaluation
                 best_move = first_move
 
-    for move in b.legal_moves():
+    for move in order_moves(b):
         if move == first_move:
             continue
         b.apply(move)
@@ -374,11 +395,12 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float) -> chess.Move | None:
+def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None, float]:
 
     end = time.perf_counter() + time_limit
     
     best_move = None
+    best_eval = -math.inf
 
     try:
         for depth in range(1, 100):
@@ -388,24 +410,25 @@ def get_best_move(b: chess.Board, time_limit: float) -> chess.Move | None:
             if not USE_UCI:
                 print(f"Depth: {depth}", end = "\r")
 
-            best_eval = -math.inf
+            cur_best_eval = -math.inf
 
             for move in b.legal_moves():
                 b_check.apply(move)
                 evaluation = -search_moves(b_check, depth - 1, -math.inf, math.inf, end)
                 b_check.undo()
 
-                if evaluation > best_eval:
-                    best_eval = evaluation
+                if evaluation > cur_best_eval:
+                    cur_best_eval = evaluation
                     cur_best_move = move
                 
             best_move = cur_best_move
+            best_eval = cur_best_eval
     except KeyboardInterrupt:
         raise
     except TimeoutError:
         pass
 
-    return best_move
+    return (best_move, best_eval)
 
 def main() -> None:
     board = chess.Board()
@@ -417,12 +440,13 @@ def main() -> None:
         best_move = get_input(board)
         board.apply(best_move)
         print(board.pretty())
-        best_move = get_best_move(board, TIME_LIMIT)
+        best_move, evaluation = get_best_move(board, TIME_LIMIT)
         print()
         if best_move == None:
             break
         board.apply(best_move)
         print(board.pretty())
+        print(f"Evaluation: {evaluation}")
 
 if __name__ == "__main__":
     if not USE_UCI:
