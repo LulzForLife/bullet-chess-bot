@@ -188,6 +188,8 @@ TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 50
 
+nodes_searched = 0
+
 transposition_table: dict[int, float] = {}
 tt_depth: dict[int, int] = {}
 tt_bestmove: dict[int, chess.Move | None] = {}
@@ -202,53 +204,6 @@ def get_input(b: chess.Board) -> chess.Move:
         except ValueError:
             continue
     return move # type: ignore
-
-def uci_loop() -> None:
-    sys.stdout.reconfigure(line_buffering=True) # pyright: ignore[reportAttributeAccessIssue]
-
-    board = chess.Board()
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        line = line.strip()
-        parts = line.split()
-        if not parts:
-            continue
-
-        if parts[0] == "uci":
-            print("id name KikiBot")
-            print("id author kiranmjlowe")
-            print("uciok", flush=True)
-            
-        elif parts[0] == "isready":
-            print("readyok", flush=True)
-            
-        elif parts[0] == "position":
-            if "startpos" in parts:
-                board = chess.Board()
-            elif "fen" in parts:
-                # Find where 'moves' starts to isolate the FEN
-                fen_end = parts.index("moves") if "moves" in parts else len(parts)
-                fen_string = " ".join(parts[parts.index("fen")+1 : fen_end])
-                board = chess.Board.from_fen(fen_string)
-            
-            if "moves" in parts:
-                for move in parts[parts.index("moves") + 1:]:
-                    board.apply(chess.Move.from_uci(move))
-
-        elif parts[0] == "go":
-            move = get_best_move(board, TIME_LIMIT)[0]
-            if move is None:
-                move = random.choice(board.legal_moves())
-            
-            print(f"bestmove {move.uci()}", flush=True)
-
-        elif parts[0] == "ucinewgame":
-            board = chess.Board()
-
-        elif parts[0] == "quit":
-            break
 
 def evaluate(b: chess.Board) -> float:
     global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, MOBILITY_BONUS_EG, MOBILITY_BONUS_MG
@@ -323,10 +278,12 @@ def order_moves(b: chess.Board) -> list[chess.Move]:
     return new_moves
 
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched
     
     if time.perf_counter() >= end:
         raise TimeoutError
+
+    nodes_searched += 1
 
     if b in chess.CHECKMATE:
         return -100000.0 + ply
@@ -411,15 +368,18 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None, float | str]:
-
-    end = time.perf_counter() + time_limit
+def get_best_move(b: chess.Board, time_limit: float, max_depth: int = 100) -> tuple[chess.Move | None, float | str]:
+    global nodes_searched, USE_UCI
+    
+    nodes_searched = 0
+    start_time = time.perf_counter()
+    end = start_time + time_limit
     
     best_move = None
     best_eval = -math.inf
 
     try:
-        for depth in range(1, 100):
+        for depth in range(1, max_depth + 1):
             cur_best_move = None
             b_check = b.copy()
 
@@ -429,12 +389,15 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
             cur_best_eval = -math.inf
             alpha = -math.inf
 
-            legal_moves = b.legal_moves()
-            if best_move is not None:
+            legal_moves = list(b.legal_moves())
+            if not legal_moves:
+                break
+                
+            if best_move is not None and best_move in legal_moves:
                 legal_moves.remove(best_move)
                 legal_moves.insert(0, best_move)
 
-            for move in b.legal_moves():
+            for move in legal_moves:
                 b_check.apply(move)
                 evaluation = -search_moves(b_check, depth - 1, -math.inf, -alpha, end)
                 b_check.undo()
@@ -449,16 +412,36 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
             best_move = cur_best_move
             best_eval = cur_best_eval
 
+            elapsed = time.perf_counter() - start_time
+            elapsed_ms = max(1, int(elapsed * 1000))
+            nps = int(nodes_searched / elapsed) if elapsed > 0 else 0
+            
             if abs(best_eval) > 90000.0:
                 plies_to_mate = 100000.0 - abs(best_eval)
                 moves_to_mate = math.ceil(plies_to_mate / 2)
-                prefix = "-" if best_eval < 0 else ""
-                return (best_move, f"{prefix}M{moves_to_mate}")
+                score_str = f"mate {int(moves_to_mate) if best_eval > 0 else -int(moves_to_mate)}"
+            else:
+                score_str = f"cp {int(best_eval)}"
+
+            pv_str = best_move.uci() if best_move else ""
+            
+            if USE_UCI:
+                print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {pv_str}", flush=True)
+
+            if abs(best_eval) > 90000.0:
+                break
 
     except KeyboardInterrupt:
         raise
     except TimeoutError:
         pass
+
+    if abs(best_eval) > 90000.0:
+        plies_to_mate = 100000.0 - abs(best_eval)
+        moves_to_mate = math.ceil(plies_to_mate / 2)
+        prefix = "-" if best_eval < 0 else ""
+        return (best_move, f"{prefix}M{moves_to_mate}")
+    
 
     return (best_move, best_eval)
 
@@ -483,4 +466,5 @@ if __name__ == "__main__":
     if not USE_UCI:
         main()
     else:
-        uci_loop()
+        import uci
+        uci.uci_loop()

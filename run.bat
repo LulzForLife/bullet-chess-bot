@@ -1,3 +1,3 @@
 @echo off
-python main.py --uci
+python uci.py
 pause
