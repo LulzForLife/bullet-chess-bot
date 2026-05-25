@@ -4,6 +4,13 @@ import sys
 import random
 import time
 
+from enum import IntEnum, auto
+
+class Flag(IntEnum):
+    EXACT = auto()
+    UPPER = auto()
+    LOWER = auto()
+
 PIECE_VALUES = {
     chess.KING: 60000.0,
     chess.QUEEN: 900.0,
@@ -163,6 +170,18 @@ USE_UCI = "--uci" in sys.argv
 
 transposition_table: dict[int, float] = {}
 tt_depth: dict[int, int] = {}
+tt_bestmove: dict[int, chess.Move | None] = {}
+tt_flags: dict[int, Flag] = {}
+
+def get_input(b: chess.Board) -> chess.Move:
+    move = None
+    legal_moves = b.legal_moves()
+    while move not in legal_moves:
+        try:
+            move = chess.Move.from_uci(input("Enter move (e2e4, etc): "))
+        except ValueError:
+            continue
+    return move # type: ignore
 
 def uci_loop() -> None:
     sys.stdout.reconfigure(line_buffering=True) # pyright: ignore[reportAttributeAccessIssue]
@@ -246,7 +265,8 @@ def evaluate(b: chess.Board) -> float:
     return evaluation if b.turn == chess.WHITE else -evaluation
 
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float) -> float:
-    global transposition_table, tt_depth, hits
+    global transposition_table, tt_depth, tt_bestmove, tt_flags # Add tt_flags
+    
     if time.perf_counter() >= end:
         raise TimeoutError
     if b in chess.CHECKMATE:
@@ -258,27 +278,68 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         return evaluate(b)
     
     b_hash = hash(b)
+    
+    original_alpha = alpha
 
-    if b_hash in transposition_table:
-        if tt_depth[b_hash] >= depth:
-            return transposition_table[b_hash]
+    legal_moves = b.legal_moves()
 
-    for move in b.legal_moves():
+    first_move = None
+    best_move = None
+    
+    if b_hash in transposition_table and tt_depth[b_hash] >= depth:
+        score = transposition_table[b_hash]
+        flag = tt_flags[b_hash]
+        
+        if flag == Flag.EXACT:
+            return score
+        elif flag == Flag.LOWER and score >= beta:
+            return beta
+        elif flag == Flag.UPPER and score <= alpha:
+            return alpha
+            
+        first_move = tt_bestmove[b_hash]
+        
+        if first_move is not None and first_move in legal_moves:
+            b.apply(first_move)
+            evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
+            b.undo()
+
+            if evaluation >= beta:
+                return beta
+            if evaluation > alpha:
+                alpha = evaluation
+                best_move = first_move
+
+    for move in legal_moves:
+        if move == first_move:
+            continue
         b.apply(move)
         evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
         b.undo()
 
         if evaluation >= beta:
+            transposition_table[b_hash] = beta
+            tt_depth[b_hash] = depth
+            tt_bestmove[b_hash] = move
+            tt_flags[b_hash] = Flag.LOWER
             return beta
+            
         if evaluation > alpha:
             alpha = evaluation
+            best_move = move
     
     transposition_table[b_hash] = alpha
     tt_depth[b_hash] = depth
+    tt_bestmove[b_hash] = best_move
+    
+    if alpha > original_alpha:
+        tt_flags[b_hash] = Flag.EXACT
+    else:
+        tt_flags[b_hash] = Flag.UPPER
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: int) -> chess.Move | None:
+def get_best_move(b: chess.Board, time_limit: float) -> chess.Move | None:
 
     end = time.perf_counter() + time_limit
     
@@ -312,20 +373,20 @@ def get_best_move(b: chess.Board, time_limit: int) -> chess.Move | None:
     return best_move
 
 def main() -> None:
-    global hits
     board = chess.Board()
 
     print(board.pretty())
 
     hits = 0
     while board not in chess.CHECKMATE and board not in chess.DRAW:
+        best_move = get_input(board)
+        board.apply(best_move)
+        print(board.pretty())
         best_move = get_best_move(board, TIME_LIMIT)
         print()
-        print(f"Hits: {hits} / Nodes: {len(transposition_table.keys())}")
         if best_move == None:
             break
         board.apply(best_move)
-
         print(board.pretty())
 
 if __name__ == "__main__":
