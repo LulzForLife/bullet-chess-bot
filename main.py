@@ -411,18 +411,23 @@ def get_best_move(b: chess.Board, time_limit: float) -> tuple[chess.Move | None,
                 print(f"Depth: {depth}", end = "\r")
 
             cur_best_eval = -math.inf
+            alpha = -math.inf 
 
             for move in b.legal_moves():
                 b_check.apply(move)
-                evaluation = -search_moves(b_check, depth - 1, -math.inf, math.inf, end)
+                evaluation = -search_moves(b_check, depth - 1, -math.inf, -alpha, end)
                 b_check.undo()
 
                 if evaluation > cur_best_eval:
                     cur_best_eval = evaluation
                     cur_best_move = move
                 
+                if cur_best_eval > alpha:
+                    alpha = cur_best_eval
+                
             best_move = cur_best_move
             best_eval = cur_best_eval
+
     except KeyboardInterrupt:
         raise
     except TimeoutError:
