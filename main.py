@@ -110,6 +110,7 @@ MIDDLEGAME_BONUS = {
         20, 30, 10,  0,  0, 10, 30, 20
     ]
 }
+
 ENDGAME_BONUS = {
     chess.PAWN: [
         0,  0,  0,  0,  0,  0,  0,  0,
@@ -184,6 +185,34 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
+"""
+int Quiesce( int alpha, int beta ) {
+    int static_eval = Evaluate();
+
+    // Stand Pat
+    int best_value = static_eval;
+    if( best_value >= beta )
+        return best_value;
+    if( best_value > alpha )
+        alpha = best_value;
+
+    until( every_capture_has_been_examined )  {
+        MakeCapture();
+        score = -Quiesce( -beta, -alpha );
+        TakeBackMove();
+
+        if( score >= beta )
+            return score;
+        if( score > best_value )
+            best_value = score;
+        if( score > alpha )
+            alpha = score;
+    }
+
+    return best_value;
+}
+"""
+
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 50
@@ -254,7 +283,7 @@ def evaluate(b: chess.Board) -> float:
         piece_type = piece.piece_type
         index = square.index()
         psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
-        psqb += ENDGAME_BONUS[piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage
+        psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
         for move in legal_moves:
