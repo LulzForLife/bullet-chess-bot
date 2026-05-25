@@ -187,6 +187,10 @@ MIRROR_BOARD = [
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 50
+MAX_PLY = 64
+KILLER_PRIMARY = 750.0
+KILLER_SECONDARY = 650.0
+SELF_PLAY = True
 
 nodes_searched = 0
 
@@ -194,6 +198,8 @@ transposition_table: dict[int, float] = {}
 tt_depth: dict[int, int] = {}
 tt_bestmove: dict[int, chess.Move | None] = {}
 tt_flags: dict[int, Flag] = {}
+
+killer_moves = [[None, None] for _ in range(MAX_PLY)]
 
 def get_input(b: chess.Board) -> chess.Move:
     move = None
@@ -259,7 +265,7 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation if b.turn == chess.WHITE else -evaluation
 
-def order_moves(b: chess.Board) -> list[chess.Move]:
+def order_moves(b: chess.Board, ply: int) -> list[chess.Move]:
     global PIECE_VALUES, CASTLE_BONUS
     new_moves: list[chess.Move] = []
     new_values: list[float] = []
@@ -267,7 +273,10 @@ def order_moves(b: chess.Board) -> list[chess.Move]:
         if move.is_capture(b):
             value = PIECE_VALUES[b[move.destination].piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
         else:
-            value = 0.0
+            if move == killer_moves[ply][0]:
+                value = KILLER_PRIMARY
+            else:
+                value = KILLER_SECONDARY
         if move.is_promotion():
             value += PIECE_VALUES[move.promotion] # type: ignore
         if move.is_castling(b):
@@ -277,8 +286,14 @@ def order_moves(b: chess.Board) -> list[chess.Move]:
         new_values.insert(index, -value)
     return new_moves
 
+def store_killer(move: chess.Move, ply: int) -> None:
+    global killer_moves
+    if killer_moves[ply][0] != move:
+        killer_moves[ply][1] = killer_moves[ply][0]
+        killer_moves[ply][1]
+
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched, killer_moves
     
     if time.perf_counter() >= end:
         raise TimeoutError
@@ -322,12 +337,16 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             b.undo()
 
             if evaluation >= beta:
+                if not first_move.is_capture(b):
+                    store_killer(first_move, ply)
+
                 return beta
+            
             if evaluation > alpha:
                 alpha = evaluation
                 best_move = first_move
 
-    for move in order_moves(b):
+    for move in order_moves(b, ply):
         if move == first_move:
             continue
         b.apply(move)
@@ -345,6 +364,10 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             tt_depth[b_hash] = depth
             tt_bestmove[b_hash] = move
             tt_flags[b_hash] = Flag.LOWER
+
+            if not move.is_capture(b):
+                store_killer(move, ply)
+
             return beta
             
         if evaluation > alpha:
@@ -368,7 +391,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float, max_depth: int = 100) -> tuple[chess.Move | None, float | str]:
+def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
     global nodes_searched, USE_UCI
     
     nodes_searched = 0
@@ -446,14 +469,15 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = 100) -> tu
     return (best_move, best_eval)
 
 def main() -> None:
-    board = chess.Board.from_fen("8/1K6/2r5/2k5/8/8/8/8 w - - 0 1")
+    board = chess.Board()
 
     print(board.pretty())
 
     while board not in chess.CHECKMATE and board not in chess.DRAW:
-        best_move = get_input(board)
-        board.apply(best_move)
-        print(board.pretty())
+        if not SELF_PLAY:
+            best_move = get_input(board)
+            board.apply(best_move)
+            print(board.pretty())
         best_move, evaluation = get_best_move(board, TIME_LIMIT)
         print()
         if best_move == None:
