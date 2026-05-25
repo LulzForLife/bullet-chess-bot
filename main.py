@@ -185,34 +185,6 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
-"""
-int Quiesce( int alpha, int beta ) {
-    int static_eval = Evaluate();
-
-    // Stand Pat
-    int best_value = static_eval;
-    if( best_value >= beta )
-        return best_value;
-    if( best_value > alpha )
-        alpha = best_value;
-
-    until( every_capture_has_been_examined )  {
-        MakeCapture();
-        score = -Quiesce( -beta, -alpha );
-        TakeBackMove();
-
-        if( score >= beta )
-            return score;
-        if( score > best_value )
-            best_value = score;
-        if( score > alpha )
-            alpha = score;
-    }
-
-    return best_value;
-}
-"""
-
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 50
@@ -228,7 +200,7 @@ tt_depth: dict[int, int] = {}
 tt_bestmove: dict[int, chess.Move | None] = {}
 tt_flags: dict[int, Flag] = {}
 
-killer_moves = [[None, None] for _ in range(MAX_PLY)]
+killer_moves: list[list[None | chess.Move]] = [[None, None] for _ in range(MAX_PLY)]
 
 def get_input(b: chess.Board) -> chess.Move:
     move = None
@@ -319,7 +291,114 @@ def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
     if killer_moves[ply][0] != move:
         killer_moves[ply][1] = killer_moves[ply][0]
-        killer_moves[ply][1]
+        killer_moves[ply][0] = move
+
+def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> float:
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched
+
+    if time.perf_counter() >= end:
+        raise TimeoutError
+    
+    nodes_searched += 1
+
+    if b in chess.CHECKMATE:
+        return -100000.0 + ply
+    elif b in chess.DRAW:
+        return 0.0
+    
+    stand_pat = evaluate(b)
+    if stand_pat >= beta:
+        return beta
+    if stand_pat > alpha:
+        alpha = stand_pat
+    
+    b_hash = hash(b)
+    original_alpha = alpha
+    first_move = None
+    best_move = None
+
+    if b_hash in transposition_table:
+        score = transposition_table[b_hash]
+
+        if 90000.0 < score < math.inf:
+            score -= ply
+        elif -math.inf < score < -90000.0:
+            score += ply
+        
+        flag = tt_flags[b_hash]
+        if flag == Flag.EXACT:
+            return score
+        elif flag == Flag.LOWER and score >= beta:
+            return beta
+        elif flag == Flag.UPPER and score <= alpha:
+            return alpha
+            
+        first_move = tt_bestmove[b_hash]
+        
+        if first_move is not None and first_move in b.legal_moves() and first_move.is_capture(b):
+            b.apply(first_move)
+            evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
+            b.undo()
+
+            if evaluation >= beta:
+                tt_score = beta
+                if 90000.0 < tt_score < math.inf:
+                    tt_score += ply
+                elif -math.inf < tt_score < -90000.0:
+                    tt_score -= ply
+                
+                transposition_table[b_hash] = tt_score
+                tt_depth[b_hash] = 0
+                tt_bestmove[b_hash] = first_move
+                tt_flags[b_hash] = Flag.LOWER
+                
+                return beta
+            
+            if evaluation > alpha:
+                alpha = evaluation
+                best_move = first_move
+    
+    for move in b.legal_moves():
+        if move == first_move or not move.is_capture(b):
+            continue
+        b.apply(move)
+        evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
+        b.undo()
+
+        if evaluation >= beta:
+            tt_score = beta
+            if 90000.0 < tt_score < math.inf:
+                tt_score += ply
+            elif -math.inf < tt_score < -90000.0:
+                tt_score -= ply
+                
+            transposition_table[b_hash] = tt_score
+            tt_depth[b_hash] = 0
+            tt_bestmove[b_hash] = move
+            tt_flags[b_hash] = Flag.LOWER
+
+            return beta
+            
+        if evaluation > alpha:
+            alpha = evaluation
+            best_move = move
+    
+    tt_score = alpha
+    if 90000.0 < tt_score < math.inf:
+        tt_score += ply
+    elif -math.inf < tt_score < -90000.0:
+        tt_score -= ply
+
+    transposition_table[b_hash] = tt_score
+    tt_depth[b_hash] = 0
+    tt_bestmove[b_hash] = best_move
+    
+    if alpha > original_alpha:
+        tt_flags[b_hash] = Flag.EXACT
+    else:
+        tt_flags[b_hash] = Flag.UPPER
+
+    return alpha
 
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched, killer_moves
@@ -335,7 +414,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         return 0.0
     
     if depth == 0:
-        return evaluate(b)
+        return quiesce(b, alpha, beta, end, ply)
     
     b_hash = hash(b)
     original_alpha = alpha
@@ -366,6 +445,17 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             b.undo()
 
             if evaluation >= beta:
+                tt_score = beta
+                if 90000.0 < tt_score < math.inf:
+                    tt_score += ply
+                elif -math.inf < tt_score < -90000.0:
+                    tt_score -= ply
+                    
+                transposition_table[b_hash] = tt_score
+                tt_depth[b_hash] = depth
+                tt_bestmove[b_hash] = first_move
+                tt_flags[b_hash] = Flag.LOWER
+
                 if not first_move.is_capture(b):
                     store_killer(first_move, ply)
 
