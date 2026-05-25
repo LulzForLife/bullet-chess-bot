@@ -29,6 +29,24 @@ PHASE_VALUES = {
     chess.PAWN: 0
 }
 
+MOBILITY_BONUS_MG = {
+    chess.KING: 0,
+    chess.QUEEN: 1,
+    chess.ROOK: 2,
+    chess.BISHOP: 4,
+    chess.KNIGHT: 6,
+    chess.PAWN: 0
+}
+
+MOBILITY_BONUS_EG = {
+    chess.KING: 3,
+    chess.QUEEN: 3,
+    chess.ROOK: 4,
+    chess.BISHOP: 3,
+    chess.KNIGHT: 5,
+    chess.PAWN: 0
+}
+
 MIDDLEGAME_BONUS = {
     chess.PAWN: [
         0,  0,  0,  0,  0,  0,  0,  0,
@@ -248,19 +266,38 @@ def evaluate(b: chess.Board) -> float:
     middlegame_percentage = (phase / 24)
     endgame_percentage = ((24 - phase) / 24)
 
+    legal_moves = b.legal_moves()
+    mobility_bonus = 0.0
+
     for square in white_bitboard:
         piece= b[square]
+        if piece is None:
+            raise ValueError
+        piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
-        psqb = MIDDLEGAME_BONUS[piece.piece_type][index] * middlegame_percentage # type: ignore
-        psqb += ENDGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage # type: ignore
-        evaluation += PIECE_VALUES[piece.piece_type] + psqb # type: ignore
+        psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
+        psqb += ENDGAME_BONUS[piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage
+        evaluation += PIECE_VALUES[piece_type] + psqb
+
+        for move in legal_moves:
+            if move.origin == square:
+                mobility_bonus += (MOBILITY_BONUS_MG[piece_type] * middlegame_percentage) + (MOBILITY_BONUS_EG[piece_type] * endgame_percentage)
 
     for square in black_bitboard:
         piece = b[square]
+        if piece is None:
+            raise ValueError
+        piece_type = piece.piece_type
         index = square.index()
-        psqb = MIDDLEGAME_BONUS[piece.piece_type][index] * middlegame_percentage # type: ignore
-        psqb += ENDGAME_BONUS[piece.piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage # type: ignore
-        evaluation -= PIECE_VALUES[piece.piece_type] + psqb # type: ignore
+        psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
+        psqb += ENDGAME_BONUS[piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage
+        evaluation -= PIECE_VALUES[piece_type] + psqb
+
+        for move in legal_moves:
+            if move.origin == square:
+                mobility_bonus -= (MOBILITY_BONUS_MG[piece_type] * middlegame_percentage) + (MOBILITY_BONUS_EG[piece_type] * endgame_percentage)
+
+    evaluation += mobility_bonus
 
     return evaluation if b.turn == chess.WHITE else -evaluation
 
@@ -281,8 +318,6 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     
     original_alpha = alpha
 
-    legal_moves = b.legal_moves()
-
     first_move = None
     best_move = None
     
@@ -299,7 +334,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             
         first_move = tt_bestmove[b_hash]
         
-        if first_move is not None and first_move in legal_moves:
+        if first_move is not None and first_move in b.legal_moves():
             b.apply(first_move)
             evaluation = -search_moves(b, depth - 1, -beta, -alpha, end)
             b.undo()
@@ -310,7 +345,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 alpha = evaluation
                 best_move = first_move
 
-    for move in legal_moves:
+    for move in b.legal_moves():
         if move == first_move:
             continue
         b.apply(move)
