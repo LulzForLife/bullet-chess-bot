@@ -196,6 +196,7 @@ USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 30
 CHECK_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
+LMR = 3
 MAX_PLY = 64
 KILLER_PRIMARY = 750.0
 KILLER_SECONDARY = 650.0
@@ -468,7 +469,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
     return alpha
 
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched, killer_moves
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched, killer_moves, LMR
     
     if time.perf_counter() >= end:
         raise TimeoutError
@@ -480,33 +481,35 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     elif b in chess.DRAW:
         return 0.0
     
-    if depth == 0:
+    if depth <= 0:
         return quiesce(b, alpha, beta, end, ply)
     
     b_hash = hash(b)
     original_alpha = alpha
     first_move = None
     best_move = None
+    moves_searched = 0
 
     if b_hash in transposition_table and tt_depth[b_hash] >= depth:
-        score = transposition_table[b_hash]
+        evaluation = transposition_table[b_hash]
 
-        if 90000.0 < score < math.inf:
-            score -= ply
-        elif -math.inf < score < -90000.0:
-            score += ply
+        if 90000.0 < evaluation < math.inf:
+            evaluation -= ply
+        elif -math.inf < evaluation < -90000.0:
+            evaluation += ply
         
         flag = tt_flags[b_hash]
         if flag == Flag.EXACT:
-            return score
-        elif flag == Flag.LOWER and score >= beta:
+            return evaluation
+        elif flag == Flag.LOWER and evaluation >= beta:
             return beta
-        elif flag == Flag.UPPER and score <= alpha:
+        elif flag == Flag.UPPER and evaluation <= alpha:
             return alpha
             
         first_move = tt_bestmove[b_hash]
         
         if first_move is not None and first_move in b.legal_moves():
+            moves_searched += 1
             b.apply(first_move)
             evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
             b.undo()
@@ -556,8 +559,38 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     for move in order_moves(b, ply):
         if move == first_move:
             continue
+
+        moves_searched += 1
+
         b.apply(move)
-        evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+
+        evaluation = None
+
+        can_reduce = (
+            moves_searched > 3 and
+            depth >= LMR and
+            not move.is_capture(b) and
+            not move.is_promotion() and
+            not b in chess.CHECK
+        )
+
+        if can_reduce:
+            reduced_depth = depth - LMR
+
+            evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, end, ply + 1)
+
+            if evaluation > alpha:
+                evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+        
+        else:
+            
+            if moves_searched == 1:
+                evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+            else:
+                evaluation = -search_moves(b, depth - 1, -alpha - 1, -alpha, end, ply + 1)
+                if evaluation > alpha and evaluation < beta:
+                    evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+        
         b.undo()
 
         if evaluation >= beta:
@@ -684,7 +717,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
 def main() -> None:
     global nodes_searched
-    board = chess.Board.from_fen("8/8/3nb3/4k3/8/2K5/8/8 w - - 0 1")
+    board = chess.Board()
 
     print(board.pretty())
 
