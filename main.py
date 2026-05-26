@@ -196,7 +196,7 @@ USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 30
 CHECK_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
-LMR = 3
+LMR = 2
 MAX_PLY = 64
 KILLER_PRIMARY = 750.0
 KILLER_SECONDARY = 650.0
@@ -303,7 +303,7 @@ def evaluate(b: chess.Board) -> float:
     for square in white_bitboard:
         piece= b[square]
         if piece is None:
-            raise ValueError
+            continue
         piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
         psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
@@ -330,7 +330,11 @@ def order_moves(b: chess.Board, ply: int) -> map[chess.Move]:
     new_moves: list[tuple[chess.Move, float]] = []
     for move in b.legal_moves():
         if move.is_capture(b):
-            value = PIECE_VALUES[b[move.destination].piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
+            if b[move.destination] is None:
+                destination_piece_type = chess.PAWN
+            else:
+                destination_piece_type = b[move.destination].piece_type # type: ignore
+            value = PIECE_VALUES[destination_piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
         else:
             if move == killer_moves[ply][0]:
                 value = KILLER_PRIMARY
@@ -401,9 +405,8 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
         first_move = tt_bestmove[b_hash]
         
         if (first_move is not None and
-            first_move in b.legal_moves() and
             (first_move.is_capture(b) or
-             first_move.is_promotion and first_move.promotion is chess.QUEEN)):
+             first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
             b.apply(first_move)
             evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
             b.undo()
@@ -426,8 +429,8 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                 alpha = evaluation
                 best_move = first_move
     
-    for move in b.legal_moves():
-        if not move.is_capture(b) or not (move.is_promotion() and move.promotion is chess.QUEEN):
+    for move in order_moves(b, ply):
+        if not move.is_capture(b) and not (move.is_promotion() and move.promotion is chess.QUEEN):
             continue
         b.apply(move)
         evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
@@ -658,7 +661,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
             alpha = -150000.0
             beta = 150000.0
 
-            legal_moves = list(b.legal_moves())
+            legal_moves = list(order_moves(b, 0))
             if not legal_moves:
                 break
                 
@@ -668,7 +671,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
             for move in legal_moves:
                 b_check.apply(move)
-                evaluation = -search_moves(b_check, depth - 1, -beta, -alpha, end)
+                evaluation = -search_moves(b_check, depth - 1, -beta, -alpha, end, 1)
                 b_check.undo()
 
                 if evaluation > cur_best_eval:
