@@ -56,7 +56,7 @@ def parse_go(board: chess.Board, tokens: list[str]) -> None:
     if movetime is not None:
         time_limit = movetime / 1000.0
     elif infinite:
-        time_limit = 15.0  # Safe 24-hour upper-bound fallback
+        time_limit = main.TIME_LIMIT
     else:
         # Dynamic calculation based on side-to-move clock
         my_time = wtime if board.turn == chess.WHITE else btime
@@ -80,7 +80,7 @@ def parse_go(board: chess.Board, tokens: list[str]) -> None:
     if depth:
         max_depth = depth
         if time_limit is None:
-            time_limit = 15.0
+            time_limit = main.TIME_LIMIT
     else:
         max_depth = 100
         if time_limit is None:
