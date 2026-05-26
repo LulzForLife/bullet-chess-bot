@@ -1,9 +1,7 @@
 import bulletchess as chess
 import math
 import sys
-import random
 import time
-import bisect
 
 from enum import IntEnum, auto
 
@@ -193,7 +191,9 @@ MIRROR_BOARD = [
 
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
-CASTLE_BONUS = 50
+CASTLE_BONUS = 30
+CHECK_BONUS = 10
+DELTA = PIECE_VALUES[chess.QUEEN]
 MAX_PLY = 64
 KILLER_PRIMARY = 750.0
 KILLER_SECONDARY = 650.0
@@ -242,9 +242,6 @@ def evaluate(b: chess.Board) -> float:
     middlegame_percentage = (phase / 24)
     endgame_percentage = ((24 - phase) / 24)
 
-    legal_moves = b.legal_moves()
-    mobility_bonus = 0.0
-
     for square in white_bitboard:
         piece= b[square]
         if piece is None:
@@ -255,10 +252,6 @@ def evaluate(b: chess.Board) -> float:
         psqb += ENDGAME_BONUS[piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage
         evaluation += PIECE_VALUES[piece_type] + psqb
 
-        for move in legal_moves:
-            if move.origin == square:
-                mobility_bonus += (MOBILITY_BONUS_MG[piece_type] * middlegame_percentage) + (MOBILITY_BONUS_EG[piece_type] * endgame_percentage)
-
     for square in black_bitboard:
         piece = b[square]
         if piece is None:
@@ -268,19 +261,15 @@ def evaluate(b: chess.Board) -> float:
         psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
         psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
-
-        for move in legal_moves:
-            if move.origin == square:
-                mobility_bonus -= (MOBILITY_BONUS_MG[piece_type] * middlegame_percentage) + (MOBILITY_BONUS_EG[piece_type] * endgame_percentage)
-
-    evaluation += mobility_bonus
+    
+    if b in chess.CHECK:
+        evaluation -= CHECK_BONUS
 
     return evaluation if b.turn == chess.WHITE else -evaluation
 
-def order_moves(b: chess.Board, ply: int) -> list[chess.Move]:
+def order_moves(b: chess.Board, ply: int) -> map[chess.Move]:
     global PIECE_VALUES, CASTLE_BONUS
-    new_moves: list[chess.Move] = []
-    new_values: list[float] = []
+    new_moves: list[tuple[chess.Move, float]] = []
     for move in b.legal_moves():
         if move.is_capture(b):
             value = PIECE_VALUES[b[move.destination].piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
@@ -293,10 +282,9 @@ def order_moves(b: chess.Board, ply: int) -> list[chess.Move]:
             value += PIECE_VALUES[move.promotion] # type: ignore
         if move.is_castling(b):
             value += CASTLE_BONUS
-        index = bisect.bisect(new_values, -value)
-        new_moves.insert(index, move)
-        new_values.insert(index, -value)
-    return new_moves
+        new_moves.append((move, value))
+    new_moves.sort(key = lambda t: t[1], reverse = True)
+    return map(lambda t: t[0], new_moves)
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
@@ -305,7 +293,7 @@ def store_killer(move: chess.Move, ply: int) -> None:
         killer_moves[ply][0] = move
 
 def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, nodes_searched, DELTA
 
     if time.perf_counter() >= end:
         raise TimeoutError
@@ -322,6 +310,14 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
         return beta
     if stand_pat > alpha:
         alpha = stand_pat
+
+    if stand_pat + DELTA < alpha and not b in chess.CHECK:
+        if b.turn is chess.WHITE:
+            if not (b[(chess.WHITE, chess.PAWN)] & chess.RANK_7):
+                return alpha
+        else:
+            if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
+                return alpha
     
     b_hash = hash(b)
     original_alpha = alpha
@@ -346,7 +342,10 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
             
         first_move = tt_bestmove[b_hash]
         
-        if first_move is not None and first_move in b.legal_moves() and first_move.is_capture(b):
+        if (first_move is not None and
+            first_move in b.legal_moves() and
+            (first_move.is_capture(b) or
+             first_move.is_promotion and first_move.promotion is chess.QUEEN)):
             b.apply(first_move)
             evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
             b.undo()
@@ -370,7 +369,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                 best_move = first_move
     
     for move in b.legal_moves():
-        if move == first_move or not move.is_capture(b):
+        if not move.is_capture(b) or not (move.is_promotion() and move.promotion is chess.QUEEN):
             continue
         b.apply(move)
         evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
@@ -494,7 +493,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
             b.undo()
 
-            if null_score > beta:
+            if null_score >= beta:
                 return beta
 
     for move in order_moves(b, ply):
@@ -557,11 +556,9 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
             cur_best_move = None
             b_check = b.copy()
 
-            if not USE_UCI:
-                print(f"Depth: {depth}", end = "\r")
-
-            cur_best_eval = -90000.0
-            alpha = -90000.0
+            cur_best_eval = -150000.0
+            alpha = -150000.0
+            beta = 150000.0
 
             legal_moves = list(b.legal_moves())
             if not legal_moves:
@@ -573,7 +570,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
             for move in legal_moves:
                 b_check.apply(move)
-                evaluation = -search_moves(b_check, depth - 1, -math.inf, -alpha, end)
+                evaluation = -search_moves(b_check, depth - 1, -beta, -alpha, end)
                 b_check.undo()
 
                 if evaluation > cur_best_eval:
@@ -601,6 +598,8 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
             
             if USE_UCI:
                 print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {pv_str}", flush=True)
+            else:
+                print(f"Depth: {depth}", end = "\r")
 
             if abs(best_eval) > 90000.0:
                 break
@@ -615,11 +614,11 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
         moves_to_mate = math.ceil(plies_to_mate / 2)
         prefix = "-" if best_eval < 0 else ""
         return (best_move, f"{prefix}M{moves_to_mate}")
-    
 
     return (best_move, best_eval)
 
 def main() -> None:
+    global nodes_searched
     board = chess.Board()
 
     print(board.pretty())
@@ -638,6 +637,7 @@ def main() -> None:
         board.apply(best_move)
         print(board.pretty())
         print(f"Evaluation: {evaluation}")
+        print(f"Nodes searched: {nodes_searched}")
 
 if __name__ == "__main__":
     if not USE_UCI:
