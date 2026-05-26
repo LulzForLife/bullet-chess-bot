@@ -185,6 +185,12 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
+# list of thing todo
+# make board keep track of material instead of recalcuating it every time
+# maybe instead calculate material at depth = 1 and use it for all of the depth = 0
+# delta pruning
+# add promotions/checks to quiescence search (maybe?)
+
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 50
@@ -212,6 +218,13 @@ def get_input(b: chess.Board) -> chess.Move:
             continue
     return move # type: ignore
 
+def get_phase_value(b: chess.Board, color: chess.Color) -> int:
+    global PHASE_VALUES
+    return sum(
+        len(b[(color, piece_type)]) * PHASE_VALUES[piece_type]
+        for piece_type in chess.PIECE_TYPES
+    )
+
 def evaluate(b: chess.Board) -> float:
     global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, MOBILITY_BONUS_EG, MOBILITY_BONUS_MG
     if b in chess.CHECKMATE:
@@ -224,9 +237,7 @@ def evaluate(b: chess.Board) -> float:
     white_bitboard = b[chess.WHITE]
     black_bitboard = b[chess.BLACK]
 
-    phase = 0
-    for square in white_bitboard | black_bitboard:
-        phase += PHASE_VALUES[b[square].piece_type] # type: ignore
+    phase = get_phase_value(b, chess.WHITE) + get_phase_value(b, chess.BLACK)
 
     middlegame_percentage = (phase / 24)
     endgame_percentage = ((24 - phase) / 24)
@@ -465,6 +476,27 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 alpha = evaluation
                 best_move = first_move
 
+    if not b in chess.CHECK:
+        player_phase = get_phase_value(b, b.turn)
+
+        if player_phase >= 12:
+            r = 3
+        elif player_phase > 0:
+            r = 2
+        else:
+            r = 0
+
+        if r != 0 and depth > r:
+
+            b.apply(None)
+
+            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, end, ply + 1)
+
+            b.undo()
+
+            if null_score > beta:
+                return beta
+
     for move in order_moves(b, ply):
         if move == first_move:
             continue
@@ -528,8 +560,8 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
             if not USE_UCI:
                 print(f"Depth: {depth}", end = "\r")
 
-            cur_best_eval = -math.inf
-            alpha = -math.inf
+            cur_best_eval = -90000.0
+            alpha = -90000.0
 
             legal_moves = list(b.legal_moves())
             if not legal_moves:
@@ -597,7 +629,9 @@ def main() -> None:
             best_move = get_input(board)
             board.apply(best_move)
             print(board.pretty())
+        s = time.perf_counter()
         best_move, evaluation = get_best_move(board, TIME_LIMIT)
+        time.sleep(max(0, min(TIME_LIMIT - (time.perf_counter() - s), 0.5)))
         print()
         if best_move == None:
             break
