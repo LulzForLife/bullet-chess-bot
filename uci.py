@@ -128,6 +128,7 @@ def uci_loop() -> None:
             main.tt_depth.clear()
             main.tt_bestmove.clear()
             main.tt_flags.clear()
+            main.tt_expire.clear()
             board = chess.Board()
         elif cmd == "position":
             board = parse_position(board, parts[1:])

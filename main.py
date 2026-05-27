@@ -177,6 +177,7 @@ USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 30
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
+INITIAL_EPSILON = 25.0
 LMR = 2
 MAX_PLY = 64
 KILLER_PRIMARY = 750.0
@@ -584,7 +585,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 return beta
 
     for move in order_moves(b, ply):
-        if move == first_move or b[move.origin] is None:
+        if move == first_move:
             continue
 
         moves_searched += 1
@@ -654,67 +655,95 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     return alpha
 
 def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, killer_moves
+    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_SYZYGY, INITIAL_EPSILON
     
     nodes_searched = 0
     start_time = time.perf_counter()
     end = start_time + time_limit
 
-    opening_move = get_best_opening_move(b)
-    if opening_move is not None:
-        evaluation = evaluate(b)
-        if USE_UCI:
-            elapsed = time.perf_counter() - start_time
-            elapsed_ms = max(1, int(elapsed * 1000))
-            print(f"info depth 0 score {evaluation} nodes 0 nps 0 time {elapsed_ms} pv {opening_move.uci()}", flush=True)
-        return (opening_move, evaluation)
+    if USE_OPENING:
+        opening_move = get_best_opening_move(b)
+        if opening_move is not None:
+            evaluation = evaluate(b)
+            if USE_UCI:
+                elapsed = time.perf_counter() - start_time
+                elapsed_ms = max(1, int(elapsed * 1000))
+                print(f"info depth 0 score {evaluation} nodes 0 nps 0 time {elapsed_ms} pv {opening_move.uci()}", flush=True)
+            return (opening_move, evaluation)
 
-    syzygy_move, score_str = get_best_tablebase_move(b)
-    if syzygy_move is not None and score_str is not None:
-        if USE_UCI:
-            elapsed = time.perf_counter() - start_time
-            elapsed_ms = max(1, int(elapsed * 1000))
-            print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {syzygy_move.uci()}", flush=True)
-        return (syzygy_move, score_str)
+    if USE_SYZYGY:
+        syzygy_move, score_str = get_best_tablebase_move(b)
+        if syzygy_move is not None and score_str is not None:
+            if USE_UCI:
+                elapsed = time.perf_counter() - start_time
+                elapsed_ms = max(1, int(elapsed * 1000))
+                print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {syzygy_move.uci()}", flush=True)
+            return (syzygy_move, score_str)
     
     clean_tt(b)
 
     best_move = None
-    best_eval = -math.inf
+    best_eval = -150000.0
+
+    epsilon = INITIAL_EPSILON
 
     try:
         for depth in range(1, max_depth + 1):
-            cur_best_move = None
             b_check = b.copy()
 
-            cur_best_eval = -150000.0
-            alpha = -150000.0
-            beta = 150000.0
+            if depth == 1:
+                alpha = -150000.0
+                beta = 150000.0
+            else:
+                epsilon = INITIAL_EPSILON
+                alpha = best_eval - epsilon
+                beta = best_eval + epsilon
 
-            legal_moves = list(order_moves(b, 0))
-            if not legal_moves:
+            while True:
+                cur_best_move = None
+                cur_best_eval = -150000.0
+                current_alpha = alpha
+
+                legal_moves = list(order_moves(b, 0))
+                if not legal_moves:
+                    break
+                    
+                if best_move is not None and best_move in legal_moves:
+                    legal_moves.remove(best_move)
+                    legal_moves.insert(0, best_move)
+
+                killer_moves = [[None, None] for _ in range(MAX_PLY)]
+
+                for move in legal_moves:
+                    b_check.apply(move)
+                    evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, end, 1)
+                    b_check.undo()
+
+                    if evaluation > cur_best_eval:
+                        cur_best_eval = evaluation
+                        cur_best_move = move
+                    
+                    if cur_best_eval > current_alpha:
+                        current_alpha = cur_best_eval
+
+                    if cur_best_eval >= beta:
+                        break
+
+                if cur_best_eval <= alpha:
+                    beta = (alpha + beta) / 2
+                    alpha = max(-150000.0, alpha - epsilon)
+                    epsilon *= 2
+                    continue
+
+                elif cur_best_eval >= beta:
+                    alpha = (alpha + beta) / 2
+                    beta = min(150000.0, beta + epsilon)
+                    epsilon *= 2
+                    continue
+
+                best_move = cur_best_move
+                best_eval = cur_best_eval
                 break
-                
-            if best_move is not None and best_move in legal_moves:
-                legal_moves.remove(best_move)
-                legal_moves.insert(0, best_move)
-
-            killer_moves = [[None, None] for _ in range(MAX_PLY)]
-
-            for move in legal_moves:
-                b_check.apply(move)
-                evaluation = -search_moves(b_check, depth - 1, -beta, -alpha, end, 1)
-                b_check.undo()
-
-                if evaluation > cur_best_eval:
-                    cur_best_eval = evaluation
-                    cur_best_move = move
-                
-                if cur_best_eval > alpha:
-                    alpha = cur_best_eval
-                
-            best_move = cur_best_move
-            best_eval = cur_best_eval
 
             elapsed = time.perf_counter() - start_time
             elapsed_ms = max(1, int(elapsed * 1000))
