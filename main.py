@@ -183,6 +183,7 @@ MAX_PLY = 64
 KILLER_PRIMARY = 750.0
 KILLER_SECONDARY = 650.0
 MINIMUM_MOVE_TIME = 0.2
+CAPTURE_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
 USE_SYZYGY = True
@@ -501,7 +502,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
     return alpha
 
 def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CAPTURE_EXTENSION
     
     if time.perf_counter() >= end:
         raise TimeoutError
@@ -512,6 +513,10 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         return -100000.0 + ply
     elif b in chess.DRAW:
         return 0.0
+    
+    in_check = b in chess.CHECK
+    if in_check and CAPTURE_EXTENSION:
+        depth += 1
     
     if depth <= 0:
         return quiesce(b, alpha, beta, end, ply)
@@ -563,7 +568,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 alpha = evaluation
                 best_move = first_move
 
-    if not b in chess.CHECK:
+    if not in_check:
         player_phase = get_phase_value(b, b.turn)
 
         if player_phase >= 12:
@@ -599,7 +604,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             depth >= LMR and
             not move.is_capture(b) and
             not move.is_promotion() and
-            not b in chess.CHECK
+            not in_check
         )
 
         if can_reduce:
