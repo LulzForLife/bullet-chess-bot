@@ -90,7 +90,7 @@ MIDDLEGAME_BONUS = {
         -20,-30,-30,-40,-40,-30,-30,-20,
         -10,-20,-20,-20,-20,-20,-20,-10,
         20, 20,  0,  0,  0,  0, 20, 20,
-        20, 30, 10,  0,  0, 10, 30, 20
+        20, 30, 20,  0,  0, 10, 30, 20
     ]
 }
 
@@ -175,14 +175,16 @@ MIRROR_BOARD = [
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 30
-CHECK_BONUS = 10
+CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 LMR = 2
 MAX_PLY = 64
 KILLER_PRIMARY = 750.0
 KILLER_SECONDARY = 650.0
-SELF_PLAY = True
 MINIMUM_MOVE_TIME = 0.2
+SELF_PLAY = True
+USE_OPENING = True
+USE_SYZYGY = True
 
 nodes_searched = 0
 
@@ -300,7 +302,7 @@ def get_phase_value(b: chess.Board, color: chess.Color) -> int:
     )
 
 def evaluate(b: chess.Board) -> float:
-    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS
+    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, CASTLE_RIGHTS_BONUS
     if b in chess.CHECKMATE:
         return -100000.0
     elif b in chess.DRAW:
@@ -339,8 +341,8 @@ def evaluate(b: chess.Board) -> float:
     if b.turn == chess.BLACK:
         evaluation = -evaluation
 
-    if b in chess.CHECK:
-        evaluation -= CHECK_BONUS
+    if b.castling_rights.any(b.turn):
+        evaluation += CASTLE_RIGHTS_BONUS
 
     return evaluation
 
@@ -374,6 +376,15 @@ def store_killer(move: chess.Move, ply: int) -> None:
     if killer_moves[ply][0] != move:
         killer_moves[ply][1] = killer_moves[ply][0]
         killer_moves[ply][0] = move
+
+def store_tt(b: chess.Board, b_hash: int, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, tt_pos
+
+    transposition_table[b_hash] = score
+    tt_depth[b_hash] = depth
+    tt_bestmove[b_hash] = move
+    tt_flags[b_hash] = flag
+    tt_expire[b_hash] = b.fullmove_number
 
 def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> float:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, DELTA
@@ -427,7 +438,8 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
         
         if (first_move is not None and
             (first_move.is_capture(b) or
-             first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
+             first_move.is_promotion() and first_move.promotion is chess.QUEEN) and
+             first_move in b.legal_moves()):
             b.apply(first_move)
             evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
             b.undo()
@@ -440,11 +452,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                     tt_score -= ply
                 
                 if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
-                    transposition_table[b_hash] = tt_score
-                    tt_depth[b_hash] = 0
-                    tt_bestmove[b_hash] = first_move
-                    tt_flags[b_hash] = Flag.LOWER
-                    tt_expire[b_hash] = b.fullmove_number
+                    store_tt(b, b_hash, first_move, 0, tt_score, Flag.LOWER)
                 
                 return beta
             
@@ -467,11 +475,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                 tt_score -= ply
             
             if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
-                transposition_table[b_hash] = tt_score
-                tt_depth[b_hash] = 0
-                tt_bestmove[b_hash] = move
-                tt_flags[b_hash] = Flag.LOWER
-                tt_expire[b_hash] = b.fullmove_number
+                store_tt(b, b_hash, move, 0, tt_score, Flag.LOWER)
 
             return beta
             
@@ -486,15 +490,12 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
         tt_score -= ply
 
     if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
-        transposition_table[b_hash] = tt_score
-        tt_depth[b_hash] = 0
-        tt_bestmove[b_hash] = best_move
-        tt_expire[b_hash] = b.fullmove_number
-        
         if alpha > original_alpha:
-            tt_flags[b_hash] = Flag.EXACT
+            tt_flag = Flag.EXACT
         else:
-            tt_flags[b_hash] = Flag.UPPER
+            tt_flag = Flag.UPPER
+        
+        store_tt(b, b_hash, best_move, 0, tt_score, tt_flag)
 
     return alpha
 
@@ -537,7 +538,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             return alpha
             
         first_move = tt_bestmove[b_hash]
-        if first_move is not None:
+        if first_move is not None and first_move in b.legal_moves():
             moves_searched += 1
             b.apply(first_move)
             evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
@@ -550,11 +551,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 elif -math.inf < tt_score < -90000.0:
                     tt_score -= ply
                     
-                transposition_table[b_hash] = tt_score
-                tt_depth[b_hash] = depth
-                tt_bestmove[b_hash] = first_move
-                tt_flags[b_hash] = Flag.LOWER
-                tt_expire[b_hash] = b.fullmove_number
+                store_tt(b, b_hash, first_move, depth, tt_score, Flag.LOWER)
 
                 if not first_move.is_capture(b):
                     store_killer(first_move, ply)
@@ -630,11 +627,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             elif -math.inf < tt_score < -90000.0:
                 tt_score -= ply
                 
-            transposition_table[b_hash] = tt_score
-            tt_depth[b_hash] = depth
-            tt_bestmove[b_hash] = move
-            tt_flags[b_hash] = Flag.LOWER
-            tt_expire[b_hash] = b.fullmove_number
+            store_tt(b, b_hash, move, depth, tt_score, Flag.LOWER)
 
             if not move.is_capture(b):
                 store_killer(move, ply)
@@ -651,15 +644,12 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     elif -math.inf < tt_score < -90000.0:
         tt_score -= ply
 
-    transposition_table[b_hash] = tt_score
-    tt_depth[b_hash] = depth
-    tt_bestmove[b_hash] = best_move
-    tt_expire[b_hash] = b.fullmove_number
-    
     if alpha > original_alpha:
-        tt_flags[b_hash] = Flag.EXACT
+        tt_flag = Flag.EXACT
     else:
-        tt_flags[b_hash] = Flag.UPPER
+        tt_flag = Flag.UPPER
+
+    store_tt(b, b_hash, best_move, depth, tt_score, tt_flag)
 
     return alpha
 
@@ -712,7 +702,6 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
             killer_moves = [[None, None] for _ in range(MAX_PLY)]
 
             for move in legal_moves:
-
                 b_check.apply(move)
                 evaluation = -search_moves(b_check, depth - 1, -beta, -alpha, end, 1)
                 b_check.undo()

@@ -103,6 +103,8 @@ def uci_loop() -> None:
     """Core text input stream orchestration loop compliant with the UCI specification."""
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
+    main.USE_OPENING = True
+    main.USE_SYZYGY = True
     board = chess.Board()
     
     while True:
