@@ -170,6 +170,10 @@ MIRROR_BOARD = [
 ]
 
 # list of things todo
+# check if the history value in move ordering needs adjustment
+
+
+
 # make board keep track of material instead of recalcuating it every time
 # maybe instead calculate material at depth = 1 and use it for all of the depth = 0
 
@@ -181,8 +185,6 @@ DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 MAX_PLY = 64
-KILLER_PRIMARY = 750.0
-KILLER_SECONDARY = 650.0
 MINIMUM_MOVE_TIME = 0.2
 CAPTURE_EXTENSION = False
 SELF_PLAY = True
@@ -198,12 +200,16 @@ tt_flags: dict[int, Flag] = {}
 tt_expire: dict[int, int] = {}
 
 killer_moves: list[list[None | chess.Move]] = [[None, None] for _ in range(MAX_PLY)]
+history: dict[chess.Color, dict[chess.Move, int]] = {
+    chess.WHITE: {},
+    chess.BLACK: {}
+}
 
 if os.path.exists("gaviota_5"):
     try:
-        tablebase = gaviota.open_tablebase("gaviota_5/3")
+        tablebase = gaviota.open_tablebase("gaviota_5/5")
         tablebase.add_directory("gaviota_5/4")
-        tablebase.add_directory("gaviota_5/5")
+        tablebase.add_directory("gaviota_5/3")
     except OSError:
         if not USE_UCI:
             print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
@@ -288,6 +294,21 @@ def clean_tt(b: chess.Board) -> None:
         del tt_bestmove[b_hash]
         del tt_expire[b_hash]
 
+def clear_history() -> None:
+    global history
+
+    history[chess.WHITE].clear()
+    history[chess.BLACK].clear()
+
+def clean_history() -> None:
+    global history
+
+    for turn in (chess.WHITE, chess.BLACK):
+
+        for key, value in history[turn].items():
+
+            history[turn][key] = value >> 1
+
 def get_phase_value(b: chess.Board, color: chess.Color) -> int:
     global PHASE_VALUES
     return sum(
@@ -340,36 +361,60 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation
 
-def order_moves(b: chess.Board, ply: int) -> map[chess.Move]:
-    global PIECE_VALUES, CASTLE_BONUS
+def order_moves(b: chess.Board, ply: int, captures_only: bool = False) -> list[chess.Move]:
+    global PIECE_VALUES, CASTLE_BONUS, history, killer_moves, tt_bestmove
     new_moves: list[tuple[chess.Move, float]] = []
+    
+    b_hash = hash(b)
+    tt_move = tt_bestmove.get(b_hash, None)
+    
     for move in b.legal_moves():
-        if move.is_capture(b):
+        is_capture = move.is_capture(b)
+        is_promo = move.is_promotion()
+        
+        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN)):
+            continue
+            
+        if move == tt_move:
+            value = 1000000.0
+            
+        elif is_capture:
             if b[move.destination] is None:
                 destination_piece_type = chess.PAWN
             else:
-                destination_piece_type = b[move.destination].piece_type # type: ignore
-            value = PIECE_VALUES[destination_piece_type] - PIECE_VALUES[b[move.origin].piece_type] # type: ignore
+                destination_piece_type = b[move.destination].piece_type  # type: ignore
+            
+            value = 100000.0 + (PIECE_VALUES[destination_piece_type] * 10) - PIECE_VALUES[b[move.origin].piece_type]  # type: ignore
+            
         else:
-            if move == killer_moves[ply][0]:
-                value = KILLER_PRIMARY
-            elif move == killer_moves[ply][1]:
-                value = KILLER_SECONDARY
+            if ply < len(killer_moves) and move == killer_moves[ply][0]:
+                value = 20000.0
+            elif ply < len(killer_moves) and move == killer_moves[ply][1]:
+                value = 15000.0
             else:
-                value = 0.0
-        if move.is_promotion():
-            value += PIECE_VALUES[move.promotion] # type: ignore
+                value = history[b.turn].get(move, 0)
+                
+        if is_promo:
+            value += 90000.0 + PIECE_VALUES[move.promotion]  # type: ignore
+            
         if move.is_castling(b):
             value += CASTLE_BONUS
+            
         new_moves.append((move, value))
-    new_moves.sort(key = lambda t: t[1], reverse = True)
-    return map(lambda t: t[0], new_moves)
+        
+    new_moves.sort(key=lambda t: t[1], reverse=True)
+    return [t[0] for t in new_moves]
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
     if killer_moves[ply][0] != move:
         killer_moves[ply][1] = killer_moves[ply][0]
         killer_moves[ply][0] = move
+
+def store_history(move: chess.Move, depth: int, turn: chess.Color) -> None:
+    global history
+
+    history[turn][move] = history[turn].get(move, 0) + (depth * depth)
 
 def store_tt(b: chess.Board, b_hash: int, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, tt_pos
@@ -454,7 +499,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                 alpha = evaluation
                 best_move = first_move
     
-    for move in order_moves(b, ply):
+    for move in order_moves(b, ply, captures_only = True):
         if not move.is_capture(b) and not (move.is_promotion() and move.promotion is chess.QUEEN):
             continue
         b.apply(move)
@@ -551,8 +596,10 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                     
                 store_tt(b, b_hash, first_move, depth, tt_score, Flag.LOWER)
 
-                if not first_move.is_capture(b):
+                if not first_move.is_capture(b) and not first_move.is_promotion():
+
                     store_killer(first_move, ply)
+                    store_history(first_move, depth, b.turn)
 
                 return beta
             
@@ -561,11 +608,11 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 best_move = first_move
 
     if not in_check:
-        player_phase = get_phase_value(b, b.turn)
+        player_phase = min(get_phase_value(b, chess.WHITE), get_phase_value(b, chess.BLACK))
 
-        if player_phase >= 12:
+        if player_phase >= 8:
             r = 3
-        elif player_phase > 0:
+        elif player_phase >= 2:
             r = 2
         else:
             r = 0
@@ -627,8 +674,10 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 
             store_tt(b, b_hash, move, depth, tt_score, Flag.LOWER)
 
-            if not move.is_capture(b):
+            if not move.is_capture(b) and not move.is_promotion():
+
                 store_killer(move, ply)
+                store_history(move, depth, b.turn)
 
             return beta
             
@@ -689,6 +738,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
                 return (gaviota_move, score_str)
     
     clean_tt(b)
+    clear_history()
 
     best_move = None
     best_eval = -150000.0
@@ -697,6 +747,8 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
     try:
         for depth in range(1, max_depth + 1):
+            clean_history()
+
             b_check = b.copy()
 
             if depth == 1:
@@ -789,7 +841,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
 def main() -> None:
     global nodes_searched
-    board = chess.Board()
+    board = chess.Board.from_fen("8/8/8/5KP1/2Q5/8/8/k7 w - - 3 23")
 
     print(board.pretty())
 
