@@ -170,10 +170,6 @@ MIRROR_BOARD = [
 ]
 
 # list of things todo
-# check if the history value in move ordering needs adjustment
-
-
-
 # make board keep track of material instead of recalcuating it every time
 # maybe instead calculate material at depth = 1 and use it for all of the depth = 0
 
@@ -551,6 +547,19 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     elif b in chess.DRAW:
         return 0.0
     
+    if (~b[None]).__len__() <= 5:
+        chs_board = chs.Board(b.fen())
+        wdl = tablebase.get_wdl(chs_board)
+        if wdl is not None:
+            if wdl == 0:
+                return 0.0
+            dtm = tablebase.get_dtm(chs_board)
+            if dtm is not None:
+                if wdl > 0:
+                    return 100000.0 - ply - dtm
+                else:
+                    return -100000.0 + ply + dtm
+    
     in_check = b in chess.CHECK
     if in_check and CAPTURE_EXTENSION:
         depth += 1
@@ -841,7 +850,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
 
 def main() -> None:
     global nodes_searched
-    board = chess.Board.from_fen("8/8/8/5KP1/2Q5/8/8/k7 w - - 3 23")
+    board = chess.Board()
 
     print(board.pretty())
 
