@@ -1,10 +1,11 @@
 import bulletchess as chess
 import chess as chs
-import chess.syzygy as syzygy
 import chess.polyglot as polyglot
+import chess.gaviota as gaviota
 
 import math
 import sys
+import os
 import time
 from enum import IntEnum, auto
 
@@ -186,7 +187,7 @@ MINIMUM_MOVE_TIME = 0.2
 CAPTURE_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
-USE_SYZYGY = True
+USE_GAVIOTA = True
 
 nodes_searched = 0
 
@@ -198,8 +199,17 @@ tt_expire: dict[int, int] = {}
 
 killer_moves: list[list[None | chess.Move]] = [[None, None] for _ in range(MAX_PLY)]
 
-tablebase = syzygy.open_tablebase("syzygy/Syzygy345WDL")
-tablebase.add_directory("syzygy/Syzygy345DTZ")
+if os.path.exists("gaviota_5"):
+    try:
+        tablebase = gaviota.open_tablebase("gaviota_5/3")
+        tablebase.add_directory("gaviota_5/4")
+        tablebase.add_directory("gaviota_5/5")
+    except OSError:
+        if not USE_UCI:
+            print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
+else:
+    if not USE_UCI:
+        print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
 opening_book = polyglot.open_reader("komodo.bin")
 
 def get_input(b: chess.Board) -> chess.Move:
@@ -212,7 +222,7 @@ def get_input(b: chess.Board) -> chess.Move:
             continue
     return move # type: ignore
 
-def get_best_opening_move(board: chess.Board):
+def get_best_opening_move(board: chess.Board) -> chess.Move | None:
     global opening_book
 
     try:
@@ -227,55 +237,37 @@ def get_best_opening_move(board: chess.Board):
     except IndexError:
         return None
 
-def get_best_tablebase_move(board: chess.Board):
+def get_best_tablebase_move(board: chess.Board) -> tuple[chess.Move, float] | tuple[None, None]:
     global tablebase
-    piece_count = (~board[None]).__len__()
 
-    if piece_count <= 5:
-        best_move = None
-        best_wdl = -2
-        best_dtz = None
+    best_move = None
+    best_dtm = math.inf
+    best_wdl = -math.inf
 
-        for move in board.legal_moves():
-            board.apply(move)
-            chs_board = chs.Board(board.fen())
+    for move in board.legal_moves():
+        board.apply(move)
+        chs_board = chs.Board(board.fen())
+        
+        try:
+            dtm_score = -tablebase.probe_dtm(chs_board)
+            wdl_score = -tablebase.probe_wdl(chs_board)
+            if wdl_score > best_wdl:
+                best_dtm = dtm_score
+                best_wdl = wdl_score
+                best_move = move
+            elif wdl_score == best_wdl and dtm_score < best_dtm:
+                best_dtm = dtm_score
+                best_wdl = wdl_score
+                best_move = move
+                    
+        except (gaviota.MissingTableError, Exception):
+            pass
+
+        board.undo()
+
+    if best_move is not None:
             
-            try:
-                if board.turn is chess.WHITE:
-                    wdl_score = -tablebase.probe_wdl(chs_board)
-                else:
-                    wdl_score = tablebase.probe_wdl(chs_board)
-                
-                dtz_score = -tablebase.probe_dtz(chs_board)
-                
-                if wdl_score > best_wdl:
-                    best_wdl = wdl_score
-                    best_dtz = dtz_score
-                    best_move = move
-                elif wdl_score == best_wdl and best_wdl != 0:
-                    if best_wdl > 0 and dtz_score < best_dtz: # type: ignore
-                        best_dtz = dtz_score
-                        best_move = move
-                    elif best_wdl < 0 and dtz_score > best_dtz: # type: ignore
-                        best_dtz = dtz_score
-                        best_move = move
-                        
-            except (syzygy.MissingTableError, Exception):
-                pass
-
-            board.undo()
-
-        if best_move is not None:
-            if best_wdl > 0 and best_dtz is not None:
-                moves_to_mate = (abs(best_dtz) + 1) // 2
-                score_str = f"M{moves_to_mate}"
-            elif best_wdl < 0 and best_dtz is not None:
-                moves_to_mate = (abs(best_dtz) + 1) // 2
-                score_str = f"-M{moves_to_mate}"
-            else:
-                score_str = 0.0
-                
-            return best_move, score_str
+        return best_move, 100000.0 - best_dtm
 
     return None, None
 
@@ -660,7 +652,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     return alpha
 
 def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_SYZYGY, INITIAL_EPSILON
+    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON
     
     nodes_searched = 0
     start_time = time.perf_counter()
@@ -676,14 +668,25 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
                 print(f"info depth 0 score {evaluation} nodes 0 nps 0 time {elapsed_ms} pv {opening_move.uci()}", flush=True)
             return (opening_move, evaluation)
 
-    if USE_SYZYGY:
-        syzygy_move, score_str = get_best_tablebase_move(b)
-        if syzygy_move is not None and score_str is not None:
-            if USE_UCI:
-                elapsed = time.perf_counter() - start_time
-                elapsed_ms = max(1, int(elapsed * 1000))
-                print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {syzygy_move.uci()}", flush=True)
-            return (syzygy_move, score_str)
+    if USE_GAVIOTA:
+        piece_count = (~b[None]).__len__()
+        if piece_count <= 5:
+            gaviota_move, score = get_best_tablebase_move(b)
+            if gaviota_move is not None and score is not None:
+                if -1 < score < 1:
+                    score_str = "cp 0.0"
+                else:
+                    plies_to_mate = 100000.0 - abs(score)
+                    moves_to_mate = math.ceil(plies_to_mate / 2)
+                    if USE_UCI:
+                        score_str = f"mate {int(moves_to_mate) if b.turn is chess.WHITE else -int(moves_to_mate)}"
+                        elapsed = time.perf_counter() - start_time
+                        elapsed_ms = max(1, int(elapsed * 1000))
+                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {gaviota_move.uci()}", flush=True)
+                    else:
+                        prefix = "-" if b.turn is chess.WHITE else ""
+                        score_str = f"{prefix}M{abs(moves_to_mate)}"
+                return (gaviota_move, score_str)
     
     clean_tt(b)
 
