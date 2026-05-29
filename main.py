@@ -177,11 +177,13 @@ TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_BONUS = 30
 CASTLE_RIGHTS_BONUS = 10
+DOUBLED_PAWN_PENALTY = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 MAX_PLY = 64
 MINIMUM_MOVE_TIME = 0.2
+MAX_PREFILL_TIME = 0.5
 CAPTURE_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
@@ -290,6 +292,11 @@ def clean_tt(b: chess.Board) -> None:
         del tt_bestmove[b_hash]
         del tt_expire[b_hash]
 
+def clear_killer() -> None:
+    global killer_moves, MAX_PLY
+
+    killer_moves = [[None, None] for _ in range(MAX_PLY)]
+
 def clear_history() -> None:
     global history
 
@@ -313,7 +320,7 @@ def get_phase_value(b: chess.Board, color: chess.Color) -> int:
     )
 
 def evaluate(b: chess.Board) -> float:
-    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, CASTLE_RIGHTS_BONUS
+    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, CASTLE_RIGHTS_BONUS, DOUBLED_PAWN_PENALTY
     if b in chess.CHECKMATE:
         return -100000.0
     elif b in chess.DRAW:
@@ -348,6 +355,14 @@ def evaluate(b: chess.Board) -> float:
         psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
         psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
+
+    white_pawn_bb = b[(chess.WHITE, chess.PAWN)]
+    black_pawn_bb = b[(chess.BLACK, chess.PAWN)]
+    for file in chess.FILES:
+        if (white_pawn_bb & file).__len__() > 1:
+            evaluation -= DOUBLED_PAWN_PENALTY
+        if (black_pawn_bb & file).__len__() > 1:
+            evaluation += DOUBLED_PAWN_PENALTY
     
     if b.turn == chess.BLACK:
         evaluation = -evaluation
@@ -709,8 +724,8 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON
+def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
+    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME
     
     nodes_searched = 0
     start_time = time.perf_counter()
@@ -719,7 +734,17 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
     if USE_OPENING:
         opening_move = get_best_opening_move(b)
         if opening_move is not None:
-            evaluation = evaluate(b)
+            evaluation = 0.0
+            clean_tt(b)
+            clean_history()
+            try:
+                for depth in range(MAX_PLY):
+                    new_b = b.copy()
+                    evaluation = search_moves(new_b, depth, -150000.0, 150000.0, start_time + min(time_limit / 10, MAX_PREFILL_TIME))
+                    if not USE_UCI:
+                        print(f"Depth: {depth} (prefill)", end = '\r')
+            except TimeoutError:
+                pass
             if USE_UCI:
                 elapsed = time.perf_counter() - start_time
                 elapsed_ms = max(1, int(elapsed * 1000))
@@ -781,7 +806,7 @@ def get_best_move(b: chess.Board, time_limit: float, max_depth: int = MAX_PLY) -
                     legal_moves.remove(best_move)
                     legal_moves.insert(0, best_move)
 
-                killer_moves = [[None, None] for _ in range(MAX_PLY)]
+                clear_killer()
 
                 for move in legal_moves:
                     b_check.apply(move)
