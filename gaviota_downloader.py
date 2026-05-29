@@ -134,7 +134,8 @@ def clean_all_files() -> None:
     shutil.rmtree("gaviota_5/temp5")
 
 def run_full_suite() -> None:
-    shutil.rmtree("gaviota_5")
+    if os.path.exists("gaviota_5"):
+        shutil.rmtree("gaviota_5")
     download_all_files()
     extract_all_files()
     clean_all_files()
