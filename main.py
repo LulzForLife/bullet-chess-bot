@@ -587,6 +587,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
     first_move = None
     best_move = None
     moves_searched = 0
+    ordered_moves = None
 
     if b_hash in transposition_table and tt_depth[b_hash] >= depth:
         evaluation = transposition_table[b_hash]
@@ -597,18 +598,50 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             evaluation += ply
         
         flag = tt_flags[b_hash]
-        if flag == Flag.EXACT:
-            return evaluation
-        elif flag == Flag.LOWER and evaluation >= beta:
-            return beta
-        elif flag == Flag.UPPER and evaluation <= alpha:
-            return alpha
             
         first_move = tt_bestmove[b_hash]
         if first_move is not None and first_move in b.legal_moves():
+            extension = 0
+            if (depth >= 6 and
+                flag is not Flag.UPPER and
+                abs(evaluation) < 90000.0):
+
+                margin = 80 - (4 * depth)
+                margin = max(margin, 20)
+
+                singular_beta = evaluation - margin
+
+                if depth < 6:
+                    singular_depth = depth - 2
+                else:
+                    singular_depth = (depth + 1) // 2
+
+                best_alternative = -150000.0
+
+                ordered_moves = order_moves(b, ply)
+                for move in ordered_moves:
+                    if move == first_move:
+                        continue
+
+                    b.apply(move)
+                    best_alternative = max(best_alternative, -search_moves(b, singular_depth, singular_beta - 1, singular_beta, end, ply + 1))
+                    b.undo()
+
+                    if best_alternative < singular_beta:
+                        extension = 1
+                        break
+            
+            if extension == 0:
+                if flag == Flag.EXACT:
+                    return evaluation
+                elif flag == Flag.LOWER and evaluation >= beta:
+                    return beta
+                elif flag == Flag.UPPER and evaluation <= alpha:
+                    return alpha
+
             moves_searched += 1
             b.apply(first_move)
-            evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+            evaluation = -search_moves(b, depth - 1 + extension, -beta, -alpha, end, ply + 1)
             b.undo()
 
             if evaluation >= beta:
@@ -652,7 +685,9 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             if null_score >= beta:
                 return beta
 
-    for move in order_moves(b, ply):
+    if ordered_moves is None:
+        ordered_moves = order_moves(b, ply)
+    for move in ordered_moves:
         if move == first_move:
             continue
 
