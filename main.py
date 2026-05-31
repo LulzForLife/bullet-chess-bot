@@ -14,6 +14,143 @@ class Flag(IntEnum):
     UPPER = auto()
     LOWER = auto()
 
+class EvalBoard():
+    def __init__(self) -> None:
+        self.board = chess.Board()
+        self.evaluation = evaluate(self.board)
+        self.white_phase = get_phase_value(self.board, chess.WHITE)
+        self.black_phase = get_phase_value(self.board, chess.BLACK)
+        
+        self.state_stack = []
+    
+    def __getitem__(self, key):
+        return self.board.__getitem__(key)
+    
+    def __hash__(self) -> int:
+        return self.board.__hash__()
+    
+    def status(self, status: chess.BoardStatus) -> bool:
+        return self.board in status
+    
+    def is_capture(self, move: chess.Move) -> bool:
+        return move.is_capture(self.board)
+    
+    def is_castling(self, move: chess.Move) -> bool:
+        return move.is_castling(self.board)
+    
+    def legal_moves(self) -> list[chess.Move]:
+        return self.board.legal_moves()
+    
+    def fen(self) -> str:
+        return self.board.fen()
+    
+    def apply(self, move: chess.Move | None) -> None:
+        self.state_stack.append((self.evaluation, self.white_phase, self.black_phase))
+
+        if move is None:
+            self.board.apply(move)
+            self.evaluation = -self.evaluation
+            return
+        
+        is_capture = move.is_capture(self.board)
+        is_castling = move.is_castling(self.board)
+        is_en_passant = self.board.en_passant_square == move.destination
+        is_promotion = move.is_promotion()
+
+        if is_capture or is_castling or is_en_passant or is_promotion:
+            self.board.apply(move)
+            if is_capture or is_en_passant or is_promotion:
+                self.white_phase = get_phase_value(self.board, chess.WHITE)
+                self.black_phase = get_phase_value(self.board, chess.BLACK)
+            
+            self.evaluation = evaluate(self.board)
+            return
+
+        turn = self.board.turn
+        origin_piece = self.board[move.origin]
+        piece_type = origin_piece.piece_type if origin_piece else chess.PAWN
+        
+        phase = min(24, self.white_phase + self.black_phase)
+        mg_pct = phase / 24
+        eg_pct = (24 - phase) / 24
+
+        dS = 0.0
+        
+        if turn == chess.WHITE:
+            origin_idx = MIRROR_BOARD[move.origin.index()]
+            dest_idx = MIRROR_BOARD[move.destination.index()]
+            psqt_old = MIDDLEGAME_BONUS[piece_type][origin_idx] * mg_pct + ENDGAME_BONUS[piece_type][origin_idx] * eg_pct
+            psqt_new = MIDDLEGAME_BONUS[piece_type][dest_idx] * mg_pct + ENDGAME_BONUS[piece_type][dest_idx] * eg_pct
+            dS += (psqt_new - psqt_old)
+        else:
+            origin_idx = move.origin.index()
+            dest_idx = move.destination.index()
+            psqt_old = MIDDLEGAME_BONUS[piece_type][origin_idx] * mg_pct + ENDGAME_BONUS[piece_type][origin_idx] * eg_pct
+            psqt_new = MIDDLEGAME_BONUS[piece_type][dest_idx] * mg_pct + ENDGAME_BONUS[piece_type][dest_idx] * eg_pct
+            dS -= (psqt_new - psqt_old)
+
+        old_w_castle = self.board.castling_rights.any(chess.WHITE)
+        old_b_castle = self.board.castling_rights.any(chess.BLACK)
+
+        self.board.apply(move)
+
+        new_w_castle = self.board.castling_rights.any(chess.WHITE)
+        new_b_castle = self.board.castling_rights.any(chess.BLACK)
+
+        if old_w_castle and not new_w_castle:
+            dS -= CASTLE_RIGHTS_BONUS
+        if old_b_castle and not new_b_castle:
+            dS += CASTLE_RIGHTS_BONUS
+
+        if turn == chess.WHITE:
+            self.evaluation = -self.evaluation - dS
+        else:
+            self.evaluation = -self.evaluation + dS
+
+        return
+    
+    def undo(self) -> chess.Move | None:
+        move = self.board.undo()
+
+        self.evaluation, self.white_phase, self.black_phase = self.state_stack.pop()
+            
+        return move
+    
+    @classmethod
+    def from_fen(cls, fen: str) -> "EvalBoard":
+        n = cls()
+        n.board = chess.Board.from_fen(fen)
+        n.evaluation = evaluate(n.board)
+        n.white_phase = get_phase_value(n.board, chess.WHITE)
+        n.black_phase = get_phase_value(n.board, chess.BLACK)
+        n.state_stack = []
+        return n
+    
+    def copy(self) -> "EvalBoard":
+        n = EvalBoard()
+        n.board = self.board.copy()
+        n.evaluation = self.evaluation
+        n.white_phase = self.white_phase
+        n.black_phase = self.black_phase
+        n.state_stack = self.state_stack.copy()
+        return n
+    
+    def pretty(self) -> str:
+        return self.board.pretty()
+    
+    @property
+    def fullmove_number(self) -> int:
+        return self.board.fullmove_number
+    
+    @property
+    def turn(self) -> chess.Color:
+        return self.board.turn
+    
+    @property
+    def castling_rights(self) -> chess.CastlingRights:
+        return self.board.castling_rights
+
+
 PIECE_VALUES = {
     chess.KING: 60000.0,
     chess.QUEEN: 900.0,
@@ -170,8 +307,8 @@ MIRROR_BOARD = [
 ]
 
 # list of things todo
-# make board keep track of material instead of recalcuating it every time
-# maybe instead calculate material at depth = 1 and use it for all of the depth = 0
+# add back single extensions
+# split endgame and middlegame evaluation in board class and make evaluation() function obsolete
 
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
@@ -216,7 +353,7 @@ else:
         print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
 opening_book = polyglot.open_reader("komodo.bin")
 
-def get_input(b: chess.Board) -> chess.Move:
+def get_input(b: EvalBoard) -> chess.Move:
     move = None
     legal_moves = b.legal_moves()
     while move not in legal_moves:
@@ -226,7 +363,7 @@ def get_input(b: chess.Board) -> chess.Move:
             continue
     return move # type: ignore
 
-def get_best_opening_move(board: chess.Board) -> chess.Move | None:
+def get_best_opening_move(board: EvalBoard) -> chess.Move | None:
     global opening_book
 
     try:
@@ -241,7 +378,7 @@ def get_best_opening_move(board: chess.Board) -> chess.Move | None:
     except IndexError:
         return None
 
-def get_best_tablebase_move(board: chess.Board) -> tuple[chess.Move, float] | tuple[None, None]:
+def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tuple[None, None]:
     global tablebase
 
     best_move = None
@@ -275,7 +412,7 @@ def get_best_tablebase_move(board: chess.Board) -> tuple[chess.Move, float] | tu
 
     return None, None
 
-def clean_tt(b: chess.Board) -> None:
+def clean_tt(b: EvalBoard) -> None:
     global transposition_table, tt_depth, tt_flags, tt_bestmove, tt_expire
     min_date = b.fullmove_number - 1
 
@@ -312,7 +449,7 @@ def clean_history() -> None:
 
             history[turn][key] = value >> 1
 
-def get_phase_value(b: chess.Board, color: chess.Color) -> int:
+def get_phase_value(b: EvalBoard | chess.Board, color: chess.Color) -> int:
     global PHASE_VALUES
     return sum(
         len(b[(color, piece_type)]) * PHASE_VALUES[piece_type]
@@ -356,14 +493,6 @@ def evaluate(b: chess.Board) -> float:
         psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
-    white_pawn_bb = b[(chess.WHITE, chess.PAWN)]
-    black_pawn_bb = b[(chess.BLACK, chess.PAWN)]
-    for file in chess.FILES:
-        if (white_pawn_bb & file).__len__() > 1:
-            evaluation -= DOUBLED_PAWN_PENALTY
-        if (black_pawn_bb & file).__len__() > 1:
-            evaluation += DOUBLED_PAWN_PENALTY
-    
     if b.castling_rights.any(chess.WHITE):
         evaluation += CASTLE_RIGHTS_BONUS
     if b.castling_rights.any(chess.BLACK):
@@ -374,7 +503,7 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation
 
-def order_moves(b: chess.Board, ply: int, captures_only: bool = False) -> list[chess.Move]:
+def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
     global PIECE_VALUES, CASTLE_BONUS, history, killer_moves, tt_bestmove
     new_moves: list[tuple[chess.Move, float]] = []
     
@@ -382,10 +511,10 @@ def order_moves(b: chess.Board, ply: int, captures_only: bool = False) -> list[c
     tt_move = tt_bestmove.get(b_hash, None)
     
     for move in b.legal_moves():
-        is_capture = move.is_capture(b)
+        is_capture = b.is_capture(move)
         is_promo = move.is_promotion()
         
-        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN) or b in chess.CHECK):
+        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN) or b.status(chess.CHECK)):
             continue
             
         if move == tt_move:
@@ -410,7 +539,7 @@ def order_moves(b: chess.Board, ply: int, captures_only: bool = False) -> list[c
         if is_promo:
             value += 90000.0 + PIECE_VALUES[move.promotion]  # type: ignore
             
-        if move.is_castling(b):
+        if b.is_castling(move):
             value += CASTLE_BONUS
             
         new_moves.append((move, value))
@@ -429,7 +558,7 @@ def store_history(move: chess.Move, depth: int, turn: chess.Color) -> None:
 
     history[turn][move] = history[turn].get(move, 0) + (depth * depth)
 
-def store_tt(b: chess.Board, b_hash: int, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
+def store_tt(b: EvalBoard, b_hash: int, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, tt_pos
 
     transposition_table[b_hash] = score
@@ -438,7 +567,7 @@ def store_tt(b: chess.Board, b_hash: int, move: chess.Move | None, depth: int, s
     tt_flags[b_hash] = flag
     tt_expire[b_hash] = b.fullmove_number
 
-def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> float:
+def quiesce(b: EvalBoard, alpha: float, beta: float, end: float, ply: int) -> float:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, DELTA
 
     if time.perf_counter() >= end:
@@ -446,18 +575,18 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
     
     nodes_searched += 1
 
-    if b in chess.CHECKMATE:
+    if b.status(chess.CHECKMATE):
         return -100000.0 + ply
-    elif b in chess.DRAW:
+    elif b.status(chess.DRAW):
         return 0.0
     
-    stand_pat = evaluate(b)
+    stand_pat = b.evaluation
     if stand_pat >= beta:
         return beta
     if stand_pat > alpha:
         alpha = stand_pat
 
-    if stand_pat + DELTA < alpha and not b in chess.CHECK:
+    if stand_pat + DELTA < alpha and not b.status(chess.CHECK):
         if b.turn is chess.WHITE:
             if not (b[(chess.WHITE, chess.PAWN)] & chess.RANK_7):
                 return alpha
@@ -489,7 +618,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
         first_move = tt_bestmove[b_hash]
         
         if (first_move is not None and
-            (first_move.is_capture(b) or
+            (b.is_capture(first_move) or
              first_move.is_promotion() and first_move.promotion is chess.QUEEN) and
              first_move in b.legal_moves()):
             b.apply(first_move)
@@ -549,7 +678,7 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
 
     return alpha
 
-def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
+def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
     global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CAPTURE_EXTENSION
     
     if time.perf_counter() >= end:
@@ -557,9 +686,9 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
 
     nodes_searched += 1
 
-    if b in chess.CHECKMATE:
+    if b.status(chess.CHECKMATE):
         return -100000.0 + ply
-    elif b in chess.DRAW:
+    elif b.status(chess.DRAW):
         return 0.0
     
     if (~b[None]).__len__() <= 5:
@@ -575,7 +704,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 else:
                     return -100000.0 + ply + dtm
     
-    in_check = b in chess.CHECK
+    in_check = b.status(chess.CHECK)
     if in_check and CAPTURE_EXTENSION:
         depth += 1
     
@@ -598,75 +727,17 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             evaluation += ply
         
         flag = tt_flags[b_hash]
-            
         first_move = tt_bestmove[b_hash]
-        if first_move is not None and first_move in b.legal_moves():
-            extension = 0
-            if (depth >= 6 and
-                flag is not Flag.UPPER and
-                abs(evaluation) < 90000.0):
 
-                margin = 80 - (4 * depth)
-                margin = max(margin, 20)
-
-                singular_beta = evaluation - margin
-
-                if depth < 6:
-                    singular_depth = depth - 2
-                else:
-                    singular_depth = (depth + 1) // 2
-
-                best_alternative = -150000.0
-
-                ordered_moves = order_moves(b, ply)
-                for move in ordered_moves:
-                    if move == first_move:
-                        continue
-
-                    b.apply(move)
-                    best_alternative = max(best_alternative, -search_moves(b, singular_depth, singular_beta - 1, singular_beta, end, ply + 1))
-                    b.undo()
-
-                    if best_alternative < singular_beta:
-                        extension = 1
-                        break
-            
-            if extension == 0:
-                if flag == Flag.EXACT:
-                    return evaluation
-                elif flag == Flag.LOWER and evaluation >= beta:
-                    return beta
-                elif flag == Flag.UPPER and evaluation <= alpha:
-                    return alpha
-
-            moves_searched += 1
-            b.apply(first_move)
-            evaluation = -search_moves(b, depth - 1 + extension, -beta, -alpha, end, ply + 1)
-            b.undo()
-
-            if evaluation >= beta:
-                tt_score = evaluation
-                if 90000.0 < tt_score < math.inf:
-                    tt_score += ply
-                elif -math.inf < tt_score < -90000.0:
-                    tt_score -= ply
-                    
-                store_tt(b, b_hash, first_move, depth, tt_score, Flag.LOWER)
-
-                if not first_move.is_capture(b) and not first_move.is_promotion():
-
-                    store_killer(first_move, ply)
-                    store_history(first_move, depth, b.turn)
-
-                return beta
-            
-            if evaluation > alpha:
-                alpha = evaluation
-                best_move = first_move
+        if flag == Flag.EXACT:
+            return evaluation
+        elif flag == Flag.LOWER and evaluation >= beta:
+            return beta
+        elif flag == Flag.UPPER and evaluation <= alpha:
+            return alpha
 
     if not in_check:
         player_phase = min(get_phase_value(b, chess.WHITE), get_phase_value(b, chess.BLACK))
-
         if player_phase >= 8:
             r = 3
         elif player_phase >= 2:
@@ -675,46 +746,34 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
             r = 0
 
         if r != 0 and depth > r:
-
             b.apply(None)
-
             null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, end, ply + 1)
-
             b.undo()
-
             if null_score >= beta:
                 return beta
 
     if ordered_moves is None:
         ordered_moves = order_moves(b, ply)
+        
     for move in ordered_moves:
-        if move == first_move:
-            continue
-
         moves_searched += 1
-
         b.apply(move)
-
         evaluation = None
 
         can_reduce = (
             moves_searched > 3 and
             depth >= LMR and
-            not move.is_capture(b) and
+            not b.is_capture(move) and
             not move.is_promotion() and
             not in_check
         )
 
         if can_reduce:
             reduced_depth = max(1, depth - LMR)
-
             evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, end, ply + 1)
-
             if evaluation > alpha:
                 evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
-        
         else:
-            
             if moves_searched == 1:
                 evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
             else:
@@ -733,11 +792,9 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
                 
             store_tt(b, b_hash, move, depth, tt_score, Flag.LOWER)
 
-            if not move.is_capture(b) and not move.is_promotion():
-
+            if not b.is_capture(move) and not move.is_promotion():
                 store_killer(move, ply)
                 store_history(move, depth, b.turn)
-
             return beta
             
         if evaluation > alpha:
@@ -751,15 +808,14 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         tt_score -= ply
 
     if alpha > original_alpha:
-        tt_flag = Flag.LOWER
+        tt_flag = Flag.EXACT
     else:
         tt_flag = Flag.UPPER
 
     store_tt(b, b_hash, best_move, depth, tt_score, tt_flag)
-
     return alpha
 
-def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
+def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
     global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME
     
     nodes_searched = 0
@@ -777,7 +833,7 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
                     new_b = b.copy()
                     evaluation = search_moves(new_b, depth, -150000.0, 150000.0, start_time + min(time_limit / 10, MAX_PREFILL_TIME))
                     if not USE_UCI:
-                        print(f"Depth: {depth} (prefill)", end = '\r')
+                        print(f"Depth: {depth} (prefill)    ", end = '\r')
             except TimeoutError:
                 pass
             if USE_UCI:
@@ -860,13 +916,11 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
                         break
 
                 if cur_best_eval <= alpha:
-                    beta = 150000.0
                     alpha = max(-150000.0, alpha - epsilon)
                     epsilon *= 2
                     continue
 
                 elif cur_best_eval >= beta:
-                    alpha = -150000.0
                     beta = min(150000.0, beta + epsilon)
                     epsilon *= 2
                     continue
@@ -891,7 +945,7 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
             if USE_UCI:
                 print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {pv_str}", flush=True)
             else:
-                print(f"Depth: {depth} ({nps}nps)", end = "\r")
+                print(f"Depth: {depth} ({nps}nps)       ", end = "\r")
 
             if abs(best_eval) > 90000.0:
                 break
@@ -911,11 +965,11 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
 
 def main() -> None:
     global nodes_searched
-    board = chess.Board()
+    board = EvalBoard()
 
     print(board.pretty())
 
-    while board not in chess.CHECKMATE and board not in chess.DRAW:
+    while not board.status(chess.CHECKMATE) and not board.status(chess.DRAW):
         if not SELF_PLAY:
             best_move = get_input(board)
             board.apply(best_move)
