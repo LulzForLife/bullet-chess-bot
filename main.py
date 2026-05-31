@@ -331,7 +331,7 @@ def evaluate(b: chess.Board) -> float:
     white_bitboard = b[chess.WHITE]
     black_bitboard = b[chess.BLACK]
 
-    phase = get_phase_value(b, chess.WHITE) + get_phase_value(b, chess.BLACK)
+    phase = min(24, get_phase_value(b, chess.WHITE) + get_phase_value(b, chess.BLACK))
 
     middlegame_percentage = (phase / 24)
     endgame_percentage = ((24 - phase) / 24)
@@ -364,11 +364,13 @@ def evaluate(b: chess.Board) -> float:
         if (black_pawn_bb & file).__len__() > 1:
             evaluation += DOUBLED_PAWN_PENALTY
     
+    if b.castling_rights.any(chess.WHITE):
+        evaluation += CASTLE_RIGHTS_BONUS
+    if b.castling_rights.any(chess.BLACK):
+        evaluation -= CASTLE_RIGHTS_BONUS
+
     if b.turn == chess.BLACK:
         evaluation = -evaluation
-
-    if b.castling_rights.any(b.turn):
-        evaluation += CASTLE_RIGHTS_BONUS
 
     return evaluation
 
@@ -383,7 +385,7 @@ def order_moves(b: chess.Board, ply: int, captures_only: bool = False) -> list[c
         is_capture = move.is_capture(b)
         is_promo = move.is_promotion()
         
-        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN)):
+        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN) or b in chess.CHECK):
             continue
             
         if move == tt_move:
@@ -511,8 +513,6 @@ def quiesce(b: chess.Board, alpha: float, beta: float, end: float, ply: int) -> 
                 best_move = first_move
     
     for move in order_moves(b, ply, captures_only = True):
-        if not move.is_capture(b) and not (move.is_promotion() and move.promotion is chess.QUEEN):
-            continue
         b.apply(move)
         evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
         b.undo()
@@ -751,7 +751,7 @@ def search_moves(b: chess.Board, depth: int, alpha: float, beta: float, end: flo
         tt_score -= ply
 
     if alpha > original_alpha:
-        tt_flag = Flag.EXACT
+        tt_flag = Flag.LOWER
     else:
         tt_flag = Flag.UPPER
 
@@ -814,9 +814,10 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
 
     epsilon = INITIAL_EPSILON
 
+    clean_history()
+
     try:
         for depth in range(1, max_depth + 1):
-            clean_history()
 
             b_check = b.copy()
 
@@ -859,13 +860,13 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
                         break
 
                 if cur_best_eval <= alpha:
-                    beta = (alpha + beta) / 2
+                    beta = 150000.0
                     alpha = max(-150000.0, alpha - epsilon)
                     epsilon *= 2
                     continue
 
                 elif cur_best_eval >= beta:
-                    alpha = (alpha + beta) / 2
+                    alpha = -150000.0
                     beta = min(150000.0, beta + epsilon)
                     epsilon *= 2
                     continue
@@ -890,7 +891,7 @@ def get_best_move(b: chess.Board, time_limit: float = TIME_LIMIT, max_depth: int
             if USE_UCI:
                 print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {pv_str}", flush=True)
             else:
-                print(f"Depth: {depth}", end = "\r")
+                print(f"Depth: {depth} ({nps}nps)", end = "\r")
 
             if abs(best_eval) > 90000.0:
                 break
