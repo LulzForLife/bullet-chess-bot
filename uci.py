@@ -2,6 +2,7 @@ import sys
 import random
 import bulletchess as chess
 import main
+import os
 
 def parse_position(board: chess.Board, tokens: list[str]) -> chess.Board:
     """Parses standard UCI position strings into the engine's board state."""
@@ -87,7 +88,7 @@ def parse_go(board: chess.Board, tokens: list[str]) -> None:
             time_limit = 3.0
 
     # Execute engine iterative deepening search
-    best_move, _ = main.get_best_move(board, time_limit, max_depth=max_depth)
+    best_move, _ = main.get_best_move(main.EvalBoard.from_fen(board.fen()), time_limit, max_depth=max_depth)
     
     # Safe fallback if search was forced out prematurely
     if best_move is None:
@@ -104,7 +105,7 @@ def uci_loop() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
     main.USE_OPENING = True
-    main.USE_GAVIOTA = True
+    main.USE_GAVIOTA = True if os.path.exists("gaviota_5") else False
     board = chess.Board()
     
     while True:
