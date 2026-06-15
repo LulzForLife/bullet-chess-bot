@@ -3,145 +3,145 @@ import chess as chs
 import chess.polyglot as polyglot
 import chess.gaviota as gaviota
 import numpy as np
-from copy import deepcopy
 
 import math
 import sys
 import os
 import time
-from enum import IntEnum, auto, IntFlag
-
-from nnue import *
+from enum import IntEnum, auto
 
 class Flag(IntEnum):
     EXACT = auto()
     UPPER = auto()
     LOWER = auto()
 
-class EvalBoard:
+class EvalBoard():
+    __slots__ = ("board", "accumulator_white", "accumulator_black", "state_stack", 
+                 "w1", "b1", "w2", "b2")
 
-    def __init__(self, fen=chs.STARTING_FEN):
-        self.board = chess.Board.from_fen(fen)
-        self.accumulator_history = []
-        self.update_accumulator_full()
+    def __init__(self) -> None:
+        self.board = chess.Board()
+        
+        # --- NNUE Weights (Dummy initialization) ---
+        # In a real engine, load these from your trained .nnue binary file
+        self.w1 = np.random.randn(768, 16).astype(np.float32)  # Input -> Hidden
+        self.b1 = np.zeros(16, dtype=np.float32)               # Hidden biases
+        self.w2 = np.random.randn(32, 1).astype(np.float32)    # Hidden -> Output (32 because 16 white + 16 black)
+        self.b2 = np.zeros(1, dtype=np.float32)                # Output bias
+        
+        self.state_stack = []
+        self._refresh_accumulators()
+    
+    def _refresh_accumulators(self) -> None:
+        """Calculates the accumulators from scratch (used on init and from_fen)"""
+        self.accumulator_white = self.b1.copy()
+        self.accumulator_black = self.b1.copy()
+        
+        active_features = []
+        for square in chess.FULL_BB:
+            piece = self.board[square]
+            if piece is not None:
+                idx = get_feature_index(piece.color, PIECE_TO_INDEX[piece.piece_type], square.index())
+                active_features.append(idx)
+                
+        if active_features:
+            # White and Black accumulators share the same features in this basic architecture,
+            # but they will be concatenated differently during evaluation based on turn.
+            self.accumulator_white += np.sum(self.w1[active_features], axis=0)
+            self.accumulator_black += np.sum(self.w1[active_features], axis=0)
 
-    @classmethod
-    def from_fen(cls, fen: str) -> EvalBoard:
-        return cls(fen)
+    def __getitem__(self, key):
+        return self.board.__getitem__(key)
+    
+    def __hash__(self) -> int:
+        return self.board.__hash__()
+    
+    def status(self, status: chess.BoardStatus) -> bool:
+        return self.board in status
+    
+    def is_capture(self, move: chess.Move) -> bool:
+        return move.is_capture(self.board)
+    
+    def is_castling(self, move: chess.Move) -> bool:
+        return move.is_castling(self.board)
+    
+    def legal_moves(self) -> list[chess.Move]:
+        return self.board.legal_moves()
+    
+    def fen(self) -> str:
+        return self.board.fen()
+    
+    def apply(self, move: chess.Move | None) -> None:
+        self.state_stack.append((self.accumulator_white.copy(), self.accumulator_black.copy()))
 
-    def update_accumulator_full(self):
-        accumulator = [list(HIDDEN_BIASES), list(HIDDEN_BIASES)]
-        for sq in chess.SQUARES:
-            piece = self.board[sq]
-            if piece:
-                c_sq = to_custom_square(sq)
-                c_pc = to_custom_piece(piece)
-                for color in (0, 1):  # 0 = WHITE, 1 = BLACK
-                    acc = accumulator[color]
-                    vec = FW_VECTORS[color][(c_pc, c_sq)]
-                    accumulator[color] = [a + v for a, v in zip(acc, vec)]
-        self.accumulator_history.append(accumulator)
-
-    def apply(self, move: chess.Move | None):
-        old_acc = self.accumulator_history[-1]
         if move is None:
-            self.accumulator_history.append([list(old_acc[0]), list(old_acc[1])])
-            self.board.apply(None)
+            self.board.apply(move)
             return
         
-        removed = []
-        added = []
+        removed_features = []
+        added_features = []
         
-        start = move.origin
-        end = move.destination
-        moving_piece = self.board[start]
+        turn = self.board.turn
+        origin_piece = self.board[move.origin]
         
-        removed.append((to_custom_piece(moving_piece), to_custom_square(start))) # type: ignore
-        
-        if move.is_promotion():
-            promoted_piece = chess.Piece(self.board.turn, move.promotion) # type: ignore
-            added.append((to_custom_piece(promoted_piece), to_custom_square(end)))
-        else:
-            added.append((to_custom_piece(moving_piece), to_custom_square(end))) # type: ignore
-            
-        is_en_passant = (end == self.board.en_passant_square) and (moving_piece is chess.PAWN)
-        if is_en_passant:
-            ep_sq = end.index() - 8 if self.board.turn == chess.WHITE else end.index() + 8
-            captured_piece = chess.Piece(self.board.turn.opposite, chess.PAWN)
-            removed.append((to_custom_piece(captured_piece), to_custom_square(ep_sq))) # type: ignore
-        elif move.is_capture(self.board):
-            captured_piece = self.board[end]
-            if captured_piece:  # Standard capture
-                removed.append((to_custom_piece(captured_piece), to_custom_square(end)))
-                
-        if move.is_castling(self.board):
-            if end == chess.G1:
-                r_start, r_end = chess.H1, chess.F1
-                r_piece = chess.Piece(chess.WHITE, chess.ROOK)
-            elif end == chess.C1:
-                r_start, r_end = chess.A1, chess.D1
-                r_piece = chess.Piece(chess.WHITE, chess.ROOK)
-            elif end == chess.G8:
-                r_start, r_end = chess.H8, chess.F8
-                r_piece = chess.Piece(chess.BLACK, chess.ROOK)
-            elif end == chess.C8:
-                r_start, r_end = chess.A8, chess.D8
-                r_piece = chess.Piece(chess.BLACK, chess.ROOK)
-            
-            removed.append((to_custom_piece(r_piece), to_custom_square(r_start))) # type: ignore
-            added.append((to_custom_piece(r_piece), to_custom_square(r_end))) # type: ignore
+        is_capture = move.is_capture(self.board)
+        is_castling = move.is_castling(self.board)
+        is_en_passant = self.board.en_passant_square == move.destination and origin_piece.piece_type == chess.PAWN # type: ignore
+        is_promotion = move.is_promotion()
 
-        old_acc = self.accumulator_history[-1]
-        new_acc = [list(old_acc[0]), list(old_acc[1])]
+        removed_features.append(get_feature_index(turn, PIECE_TO_INDEX[origin_piece.piece_type], move.origin.index())) # type: ignore
         
-        for color in (0, 1):
-            for pc, sq in removed:
-                vec = FW_VECTORS[color][(pc, sq)]
-                acc = new_acc[color]
-                for i in range(len(acc)):
-                    acc[i] -= vec[i]
-            for pc, sq in added:
-                vec = FW_VECTORS[color][(pc, sq)]
-                acc = new_acc[color]
-                for i in range(len(acc)):
-                    acc[i] += vec[i]
-                
-        self.accumulator_history.append(new_acc)
+        dest_piece_type = move.promotion if is_promotion else origin_piece.piece_type # type: ignore
+        added_features.append(get_feature_index(turn, PIECE_TO_INDEX[dest_piece_type], move.destination.index())) # type: ignore
+
+        if is_capture:
+            if is_en_passant:
+                ep_sq = move.destination.south(1) if turn == chess.WHITE else move.destination.north(1)
+                removed_features.append(get_feature_index(turn.opposite, PIECE_TO_INDEX[chess.PAWN], ep_sq.index())) # type: ignore
+            else:
+                captured_piece = self.board[move.destination]
+                removed_features.append(get_feature_index(captured_piece.color, PIECE_TO_INDEX[captured_piece.piece_type], move.destination.index())) # type: ignore
+
+        if is_castling:
+            if move.destination.index() > move.origin.index():
+                rook_orig = move.origin.index() + 3
+                rook_dest = move.origin.index() + 1
+            else: # Queenside
+                rook_orig = move.origin.index() - 4
+                rook_dest = move.origin.index() - 1
+            
+            removed_features.append(get_feature_index(turn, PIECE_TO_INDEX[chess.ROOK], rook_orig))
+            added_features.append(get_feature_index(turn, PIECE_TO_INDEX[chess.ROOK], rook_dest))
+
         self.board.apply(move)
 
+        if removed_features:
+            self.accumulator_white -= np.sum(self.w1[removed_features], axis=0)
+            self.accumulator_black -= np.sum(self.w1[removed_features], axis=0)
+        if added_features:
+            self.accumulator_white += np.sum(self.w1[added_features], axis=0)
+            self.accumulator_black += np.sum(self.w1[added_features], axis=0)
+
     def undo(self) -> chess.Move | None:
-        """Pops the last move from the board and rolls back the NNUE accumulator history."""
         move = self.board.undo()
-        self.accumulator_history.pop()
+        self.accumulator_white, self.accumulator_black = self.state_stack.pop()
         return move
-
-    @property
-    def evaluation(self) -> int:
-        if self.board in chess.DRAW:
-            return 0
-            
-        us = 0 if self.board.turn == chess.WHITE else 1
-        them = 1 - us
-        
-        current_acc = self.accumulator_history[-1]
-        ours = current_acc[us]
-        theirs = current_acc[them]
-
-        v = OUTPUT_BIAS * QUANTIZATION_PRECISION_IN
-        
-        for our_act, their_act, our_w, their_w in zip(ours, theirs, OUR_HIDDEN_WEIGHTS, THEIR_HIDDEN_WEIGHTS):
-            if our_act > 0:
-                v += our_act * our_w
-            if their_act > 0:
-                v += their_act * their_w
-
-        return int(v / QUANTIZATION_PRECISION_IN / QUANTIZATION_PRECISION_OUT)
     
-    def copy(self) -> EvalBoard:
+    @classmethod
+    def from_fen(cls, fen: str) -> 'EvalBoard':
+        n = cls()
+        n.board = chess.Board.from_fen(fen)
+        n._refresh_accumulators()
+        n.state_stack = []
+        return n
+    
+    def copy(self) -> 'EvalBoard':
         n = EvalBoard()
         n.board = self.board.copy()
-        n.accumulator_history = deepcopy(self.accumulator_history)
-        n.update_accumulator_full()
+        n.w1, n.b1, n.w2, n.b2 = self.w1, self.b1, self.w2, self.b2 # Reference shared weights
+        n.accumulator_white = self.accumulator_white.copy()
+        n.accumulator_black = self.accumulator_black.copy()
+        n.state_stack = self.state_stack.copy()
         return n
     
     def pretty(self) -> str:
@@ -163,68 +163,24 @@ class EvalBoard:
     def history(self) -> list[chess.Move]:
         return self.board.history
     
-    def __getitem__(self, key):
-        return self.board.__getitem__(key)
-    
-    def __hash__(self) -> int:
-        return self.board.__hash__()
-    
-    def status(self, status: chess.BoardStatus) -> bool:
-        return self.board in status
-    
-    def is_capture(self, move: chess.Move) -> bool:
-        return move.is_capture(self.board)
-    
-    def is_castling(self, move: chess.Move) -> bool:
-        return move.is_castling(self.board)
-    
-    def legal_moves(self) -> list[chess.Move]:
-        return self.board.legal_moves()
-    
-    def fen(self) -> str:
-        return self.board.fen()
-
-FEATURE_TRANSFORMER_HALF_DIMENSIONS = 256
-DENSE_LAYERS_WIDTH = 32
-SQUARE_NB = 64
-
-class PieceSquare(IntFlag):
-    NONE     =  0
-    W_PAWN   =  1
-    B_PAWN   =  1 * SQUARE_NB + 1
-    W_KNIGHT =  2 * SQUARE_NB + 1
-    B_KNIGHT =  3 * SQUARE_NB + 1
-    W_BISHOP =  4 * SQUARE_NB + 1
-    B_BISHOP =  5 * SQUARE_NB + 1
-    W_ROOK   =  6 * SQUARE_NB + 1
-    B_ROOK   =  7 * SQUARE_NB + 1
-    W_QUEEN  =  8 * SQUARE_NB + 1
-    B_QUEEN  =  9 * SQUARE_NB + 1
-    W_KING   = 10 * SQUARE_NB + 1
-    END      = W_KING 
-    B_KING   = 11 * SQUARE_NB + 1
-    END2     = 12 * SQUARE_NB + 1
-
-    @staticmethod
-    def from_piece(p: chess.Piece, is_white_pov: bool):
-        return {
-        True: {
-            chess.PAWN: PieceSquare.W_PAWN,
-            chess.KNIGHT: PieceSquare.W_KNIGHT,
-            chess.BISHOP: PieceSquare.W_BISHOP,
-            chess.ROOK: PieceSquare.W_ROOK,
-            chess.QUEEN: PieceSquare.W_QUEEN,
-            chess.KING: PieceSquare.W_KING
-        },
-        False: {
-            chess.PAWN: PieceSquare.B_PAWN,
-            chess.KNIGHT: PieceSquare.B_KNIGHT,
-            chess.BISHOP: PieceSquare.B_BISHOP,
-            chess.ROOK: PieceSquare.B_ROOK,
-            chess.QUEEN: PieceSquare.B_QUEEN,
-            chess.KING: PieceSquare.B_KING
-        }
-        }[p.color == is_white_pov][p.piece_type]
+    @property
+    def evaluation(self) -> float:
+        if self.board in chess.CHECKMATE:
+            return -100000.0
+            
+        # 1. Perspective concatenation: Side-to-move goes first
+        if self.turn == chess.WHITE:
+            hidden_output = np.concatenate([self.accumulator_white, self.accumulator_black])
+        else:
+            hidden_output = np.concatenate([self.accumulator_black, self.accumulator_white])
+            
+        # 2. SCReLU Activation: clamp(x, 0, 1)^2
+        activated = np.clip(hidden_output, 0.0, 1.0) ** 2
+        
+        # 3. Output layer calculation
+        score = np.dot(activated, self.w2) + self.b2
+        
+        return float(score[0])
 
 PIECE_VALUES = {
     chess.KING: 60000.0,
@@ -245,12 +201,12 @@ PHASE_VALUES = {
 }
 
 PIECE_TO_INDEX = {
-    chess.KING: 6,
-    chess.QUEEN: 5,
-    chess.ROOK: 4,
-    chess.BISHOP: 3,
-    chess.KNIGHT: 2,
-    chess.PAWN: 1
+    chess.KING: 5,
+    chess.QUEEN: 4,
+    chess.ROOK: 3,
+    chess.BISHOP: 2,
+    chess.KNIGHT: 1,
+    chess.PAWN: 0
 }
 
 MIDDLEGAME_BONUS = {
@@ -435,6 +391,11 @@ if os.path.exists("gaviota_5"):
         ...
 
 opening_book = polyglot.open_reader("komodo.bin")
+
+def get_feature_index(color: chess.Color, piece_type: int, square_index: int) -> int:
+    color_offset = 0 if color == chess.WHITE else 1
+    piece_offset = piece_type - 1
+    return (color_offset * 384) + (piece_offset * 64) + square_index
 
 def get_input(b: EvalBoard) -> chess.Move:
     move = None
@@ -1018,7 +979,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 cur_best_eval = -150000.0
                 current_alpha = alpha
 
-                legal_moves = order_moves(b, 0)
+                legal_moves = list(order_moves(b, 0))
                 if not legal_moves:
                     break
                     
