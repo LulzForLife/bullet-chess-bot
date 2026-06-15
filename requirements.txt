@@ -2,5 +2,3 @@ bulletchess
 python-chess
 requests
 py7zr
-numpy>=1.19.0
-nnue_interface @ file:./nnue_interface-0.2.7-cp314-cp314-win_amd64.whl
