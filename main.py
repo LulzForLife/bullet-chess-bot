@@ -383,18 +383,19 @@ MIRROR_BOARD = [
 
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
-CASTLE_BONUS = 30
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 MAX_PLY = 64
 MINIMUM_MOVE_TIME = 0.2
+END = 0
 MAX_PREFILL_TIME = max(0.5, MINIMUM_MOVE_TIME)
 CAPTURE_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
 USE_GAVIOTA = True
+PONDER = False
 
 nodes_searched = 0
 
@@ -416,11 +417,9 @@ if os.path.exists("gaviota_5"):
         tablebase.add_directory("gaviota_5/4")
         tablebase.add_directory("gaviota_5/3")
     except OSError:
-        if not USE_UCI:
-            print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
+        ...
 else:
-    if not USE_UCI:
-        print("Please run \"gaviota_downloader.py\" to download the gaviota tablebase.")
+    ...
 opening_book = polyglot.open_reader("komodo.bin")
 
 def get_input(b: EvalBoard) -> chess.Move:
@@ -472,7 +471,7 @@ def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tupl
                 best_move = move
                     
         except (gaviota.MissingTableError, Exception):
-            pass
+            ...
 
         board.undo()
 
@@ -653,6 +652,20 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation
 
+def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
+    nb = b.copy()
+    pv: list[str] = [move.uci()]
+    nb.apply(move)
+    b_hash = hash(nb)
+    while b_hash in transposition_table:
+        bestmove = tt_bestmove[b_hash]
+        if bestmove not in nb.legal_moves():
+            break
+        pv.append(bestmove.uci()) # type: ignore
+        nb.apply(bestmove)
+        b_hash = hash(nb)
+    return pv
+
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
     global PIECE_VALUES, CASTLE_BONUS, history, killer_moves, tt_bestmove
     new_moves: list[tuple[chess.Move, float]] = []
@@ -690,7 +703,7 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
             value += 90000.0 + PIECE_VALUES[move.promotion]  # type: ignore
             
         if b.is_castling(move):
-            value += CASTLE_BONUS
+            value += 1000
             
         new_moves.append((move, value))
         
@@ -717,10 +730,10 @@ def store_tt(b: EvalBoard, b_hash: int, move: chess.Move | None, depth: int, sco
     tt_flags[b_hash] = flag
     tt_expire[b_hash] = b.fullmove_number
 
-def quiesce(b: EvalBoard, alpha: float, beta: float, end: float, ply: int) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, DELTA
+def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, DELTA, END
 
-    if time.perf_counter() >= end:
+    if time.perf_counter() >= END:
         raise TimeoutError
     
     nodes_searched += 1
@@ -772,7 +785,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, end: float, ply: int) -> fl
              first_move.is_promotion() and first_move.promotion is chess.QUEEN) and
              first_move in b.legal_moves()):
             b.apply(first_move)
-            evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
+            evaluation = -quiesce(b, -beta, -alpha, ply + 1)
             b.undo()
 
             if evaluation >= beta:
@@ -793,7 +806,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, end: float, ply: int) -> fl
     
     for move in order_moves(b, ply, captures_only = True):
         b.apply(move)
-        evaluation = -quiesce(b, -beta, -alpha, end, ply + 1)
+        evaluation = -quiesce(b, -beta, -alpha, ply + 1)
         b.undo()
 
         if evaluation >= beta:
@@ -828,10 +841,10 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, end: float, ply: int) -> fl
 
     return alpha
 
-def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CAPTURE_EXTENSION
+def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0) -> float:
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CAPTURE_EXTENSION, END
     
-    if time.perf_counter() >= end:
+    if time.perf_counter() >= END:
         raise TimeoutError
 
     nodes_searched += 1
@@ -859,7 +872,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float
         depth += 1
     
     if depth <= 0:
-        return quiesce(b, alpha, beta, end, ply)
+        return quiesce(b, alpha, beta, ply)
     
     b_hash = hash(b)
     original_alpha = alpha
@@ -897,7 +910,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float
 
         if r != 0 and depth > r:
             b.apply(None)
-            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, end, ply + 1)
+            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1)
             b.undo()
             if null_score >= beta:
                 return beta
@@ -920,16 +933,16 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float
 
         if can_reduce:
             reduced_depth = max(1, depth - LMR)
-            evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, end, ply + 1)
+            evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, ply + 1)
             if evaluation > alpha:
-                evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+                evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
         else:
             if moves_searched == 1:
-                evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+                evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
             else:
-                evaluation = -search_moves(b, depth - 1, -alpha - 1, -alpha, end, ply + 1)
+                evaluation = -search_moves(b, depth - 1, -alpha - 1, -alpha, ply + 1)
                 if evaluation > alpha and evaluation < beta:
-                    evaluation = -search_moves(b, depth - 1, -beta, -alpha, end, ply + 1)
+                    evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
         
         b.undo()
 
@@ -966,11 +979,14 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, end: float
     return alpha
 
 def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME
+    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
     
     nodes_searched = 0
     start_time = time.perf_counter()
-    end = start_time + time_limit
+    if not PONDER:
+        END = start_time + time_limit
+    else:
+        END = start_time + 86400
 
     if USE_OPENING:
         opening_move = get_best_opening_move(b)
@@ -978,14 +994,15 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
             evaluation = 0.0
             clean_tt(b)
             clean_history()
+            END = start_time + min(time_limit / 10, MAX_PREFILL_TIME)
             try:
                 for depth in range(MAX_PLY):
                     new_b = b.copy()
-                    evaluation = search_moves(new_b, depth, -150000.0, 150000.0, start_time + min(time_limit / 10, MAX_PREFILL_TIME))
+                    evaluation = search_moves(new_b, depth, -150000.0, 150000.0)
                     if not USE_UCI:
                         print(f"Depth: {depth} (prefill)    ", end = '\r')
             except TimeoutError:
-                pass
+                ...
             if USE_UCI:
                 elapsed = time.perf_counter() - start_time
                 elapsed_ms = max(1, int(elapsed * 1000))
@@ -1020,8 +1037,6 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
     epsilon = INITIAL_EPSILON
 
-    clean_history()
-
     try:
         for depth in range(1, max_depth + 1):
 
@@ -1040,7 +1055,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 cur_best_eval = -150000.0
                 current_alpha = alpha
 
-                legal_moves = list(order_moves(b, 0))
+                legal_moves = order_moves(b, 0)
                 if not legal_moves:
                     break
                     
@@ -1052,7 +1067,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
                 for move in legal_moves:
                     b_check.apply(move)
-                    evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, end, 1)
+                    evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
                     b_check.undo()
 
                     if evaluation > cur_best_eval:
@@ -1090,10 +1105,13 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
             else:
                 score_str = f"cp {int(best_eval)}"
 
-            pv_str = best_move.uci() if best_move else ""
+            if best_move is not None:
+                pv = get_pv(b, best_move)
+            else:
+                raise ValueError
             
             if USE_UCI:
-                print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {pv_str}", flush=True)
+                print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
             else:
                 print(f"Depth: {depth} ({nps}nps)       ", end = "\r")
 
@@ -1103,7 +1121,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
     except KeyboardInterrupt:
         raise
     except TimeoutError:
-        pass
+        ...
 
     if abs(best_eval) > 90000.0:
         plies_to_mate = 100000.0 - abs(best_eval)

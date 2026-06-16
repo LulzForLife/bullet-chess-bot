@@ -3,6 +3,10 @@ import random
 import bulletchess as chess
 import main
 import os
+import time
+import threading
+
+TIME_LIMIT = main.TIME_LIMIT
 
 def parse_position(board: chess.Board, tokens: list[str]) -> chess.Board:
     """Parses standard UCI position strings into the engine's board state."""
@@ -34,8 +38,10 @@ def parse_position(board: chess.Board, tokens: list[str]) -> chess.Board:
                 continue
     return board
 
-def parse_go(board: chess.Board, tokens: list[str]) -> None:
-    """Calculates active time management allocation budgets and fires search."""
+def get_time(tokens, board) -> tuple[float, int]:
+    """
+    Parses UCI 'go' command tokens and calculates the search time_limit and max_depth.
+    """
     wtime = btime = winc = binc = movestogo = movetime = depth = None
     infinite = False
 
@@ -78,7 +84,7 @@ def parse_go(board: chess.Board, tokens: list[str]) -> None:
         else:
             time_limit = None
 
-    if depth:
+    if depth is not None:
         max_depth = depth
         if time_limit is None:
             time_limit = main.TIME_LIMIT
@@ -86,25 +92,39 @@ def parse_go(board: chess.Board, tokens: list[str]) -> None:
         max_depth = 100
         if time_limit is None:
             time_limit = 3.0
+    
+    return time_limit, max_depth
+
+def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> None:
+    def run_and_print(board: main.EvalBoard, time_limit: float, max_depth: int) -> None:
+        best_move, _ = main.get_best_move(board, time_limit, max_depth)
+        if best_move is None:
+            raise ValueError
+        ponder_move = main.get_pv(board, best_move)[1]
+        print(f"bestmove {best_move.uci()} ponder {ponder_move}", flush=True)
+    global TIME_LIMIT
+    """Calculates active time management allocation budgets and fires search."""
+    
+    time_limit, max_depth = get_time(tokens, board)
+    TIME_LIMIT = time_limit
 
     # Execute engine iterative deepening search
-    best_move, _ = main.get_best_move(main.EvalBoard.from_fen(board.fen()), time_limit, max_depth=max_depth)
-    
-    # Safe fallback if search was forced out prematurely
-    if best_move is None:
-        legal_moves = list(board.legal_moves())
-        if not legal_moves:
-            best_move = chess.Move.from_uci("0000")
-        best_move = random.choice(legal_moves)
+    b = main.EvalBoard.from_fen(board.fen())
+    thread = threading.Thread(
+        target=run_and_print,
+        args=(b, time_limit, max_depth),
+        daemon=True
+    )
+    thread.start()
 
-    if best_move:
-        print(f"bestmove {best_move.uci()}", flush=True)
+    if not is_ponder:
+        main.END = time.perf_counter() + time_limit
 
 def uci_loop() -> None:
     """Core text input stream orchestration loop compliant with the UCI specification."""
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
-    main.USE_OPENING = True
+    main.USE_OPENING = False
     main.USE_GAVIOTA = True if os.path.exists("gaviota_5") else False
     board = chess.Board()
     
@@ -121,6 +141,7 @@ def uci_loop() -> None:
         if cmd == "uci":
             print("id name KikiBot")
             print("id author kiranmjlowe")
+            print("option name Ponder type check default false")
             print("uciok", flush=True)
         elif cmd == "isready":
             print("readyok", flush=True)
@@ -135,8 +156,19 @@ def uci_loop() -> None:
             board = chess.Board()
         elif cmd == "position":
             board = parse_position(board, parts[1:])
+        elif cmd == "setoption":
+            if len(parts) >= 5:
+                if parts[1] == "name" and parts[2] == "Ponder":
+                    main.PONDER = parts[4].lower() == "true"
+        elif cmd == "ponderhit":
+            main.END = time.perf_counter() + TIME_LIMIT
+        elif cmd == "stop":
+            main.END = 0.0
         elif cmd == "go":
-            parse_go(board, parts[1:])
+            if len(parts) >= 2 and parts[1] == "ponder":
+                parse_go(board, parts[2:], True)
+            else:
+                parse_go(board, parts[1:], False)
         elif cmd == "quit":
             break
 
