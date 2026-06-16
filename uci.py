@@ -100,8 +100,11 @@ def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> 
         best_move, _ = main.get_best_move(board, time_limit, max_depth)
         if best_move is None:
             raise ValueError
-        ponder_move = main.get_pv(board, best_move)[1]
-        print(f"bestmove {best_move.uci()} ponder {ponder_move}", flush=True)
+        try:
+            ponder_move = main.get_pv(board, best_move)[1]
+            print(f"bestmove {best_move.uci()} ponder {ponder_move}", flush=True)
+        except IndexError:
+            print(f"bestmove {best_move.uci()}")
     global TIME_LIMIT
     """Calculates active time management allocation budgets and fires search."""
     
@@ -124,7 +127,7 @@ def uci_loop() -> None:
     """Core text input stream orchestration loop compliant with the UCI specification."""
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
-    main.USE_OPENING = False
+    main.USE_OPENING = True
     main.USE_GAVIOTA = True if os.path.exists("gaviota_5") else False
     board = chess.Board()
     

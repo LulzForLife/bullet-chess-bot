@@ -667,48 +667,77 @@ def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
+    #'''
     global PIECE_VALUES, CASTLE_BONUS, history, killer_moves, tt_bestmove
-    new_moves: list[tuple[chess.Move, float]] = []
     
     b_hash = hash(b)
+
+    killer0 = killer_moves[ply][0]
+    killer1 = killer_moves[ply][1]
+
     tt_move = tt_bestmove.get(b_hash, None)
+    tt_moves = []
+    winning_captures_and_promotions = []
+    equal_captures = []
+    killer0_exists = False
+    killer1_exists = False
+    killers = []
+    losing_captures = []
+    castling = []
+    moves: list[tuple[chess.Move, float]] = []
     
     for move in b.legal_moves():
+        if move == tt_move:
+            tt_moves.append(move)
+            continue
         is_capture = b.is_capture(move)
         is_promo = move.is_promotion()
         
         if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN) or b.status(chess.CHECK)):
             continue
-            
-        if move == tt_move:
-            value = 1000000.0
-            
+        
+        if is_promo:
+            winning_captures_and_promotions.append((move, PIECE_VALUES[move.promotion])) # type: ignore
         elif is_capture:
             if b[move.destination] is None:
                 destination_piece_type = chess.PAWN
             else:
                 destination_piece_type = b[move.destination].piece_type  # type: ignore
-            
-            value = 100000.0 + (PIECE_VALUES[destination_piece_type] * 10) - PIECE_VALUES[b[move.origin].piece_type]  # type: ignore
-            
-        else:
-            if ply < len(killer_moves) and move == killer_moves[ply][0]:
-                value = 20000.0
-            elif ply < len(killer_moves) and move == killer_moves[ply][1]:
-                value = 15000.0
+            origin_piece_type = b[move.origin].piece_type
+            if destination_piece_type == origin_piece_type:
+                equal_captures.append(move)
             else:
-                value = history[b.turn].get(move, 0)
-                
-        if is_promo:
-            value += 90000.0 + PIECE_VALUES[move.promotion]  # type: ignore
-            
-        if b.is_castling(move):
-            value += 1000
-            
-        new_moves.append((move, value))
-        
-    new_moves.sort(key=lambda t: t[1], reverse=True)
-    return [t[0] for t in new_moves]
+                value = PIECE_VALUES[destination_piece_type] - PIECE_VALUES[origin_piece_type]
+                if value > 0:
+                    winning_captures_and_promotions.append((move, value))
+                else:
+                    losing_captures.append((move, value))
+        else:
+            if move == killer0:
+                killer0_exists = True
+            elif move == killer1:
+                killer1_exists = True
+            else:
+                if b.is_castling(move):
+                    castling.append(move)
+                else:
+                    moves.append((move, history[b.turn].get(move, 0)))
+    
+    winning_captures_and_promotions.sort(key=lambda t: -t[1])
+    losing_captures.sort(key=lambda t: -t[1])
+    if killer0_exists:
+        killers.append(killer0)
+    if killer1_exists:
+        killers.append(killer1)
+    moves.sort(key=lambda t: -t[1])
+
+    return (tt_moves + 
+            [m[0] for m in winning_captures_and_promotions] + 
+            equal_captures +
+            killers + 
+            [m[0] for m in losing_captures] + 
+            castling +
+            [m[0] for m in moves])
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
