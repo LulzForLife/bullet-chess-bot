@@ -15,7 +15,7 @@ class Flag(IntEnum):
     LOWER = auto()
 
 class EvalBoard():
-    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack")
+    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw")
 
     def __init__(self) -> None:
         self.board = chess.Board()
@@ -23,6 +23,10 @@ class EvalBoard():
         self.eg_evaluation = eg_eval(self.board)
         self.white_phase = get_phase_value(self.board, chess.WHITE)
         self.black_phase = get_phase_value(self.board, chess.BLACK)
+
+        self.in_check = self.board in chess.CHECK
+        self.in_checkmate = self.board in chess.CHECKMATE
+        self.in_draw = self.board in chess.DRAW
         
         self.state_stack = []
     
@@ -33,7 +37,13 @@ class EvalBoard():
         return self.board.__hash__()
     
     def status(self, status: chess.BoardStatus) -> bool:
-        return self.board in status
+        if status is chess.CHECK:
+            return self.in_check
+        elif status is chess.CHECKMATE:
+            return self.in_checkmate
+        elif status is chess.DRAW:
+            return self.in_draw
+        raise NotImplementedError
     
     def is_capture(self, move: chess.Move) -> bool:
         return move.is_capture(self.board)
@@ -48,10 +58,11 @@ class EvalBoard():
         return self.board.fen()
     
     def apply(self, move: chess.Move | None) -> None:
-        self.state_stack.append((self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase))
+        self.state_stack.append((self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase, self.in_check, self.in_checkmate, self.in_draw))
 
         if move is None:
             self.board.apply(move)
+            self.update_status()
             self.mg_evaluation = -self.mg_evaluation
             self.eg_evaluation = -self.eg_evaluation
             return
@@ -149,6 +160,7 @@ class EvalBoard():
         old_castle_opp = self.board.castling_rights.any(self.board.turn.opposite)
 
         self.board.apply(move)
+        self.update_status()
 
         new_castle_self = self.board.castling_rights.any(self.board.turn.opposite)
         new_castle_opp = self.board.castling_rights.any(self.board.turn)
@@ -168,9 +180,14 @@ class EvalBoard():
     def undo(self) -> chess.Move | None:
         move = self.board.undo()
 
-        self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase = self.state_stack.pop()
+        self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase, self.in_check, self.in_checkmate, self.in_draw = self.state_stack.pop()
             
         return move
+    
+    def update_status(self) -> None:
+        self.in_check = self.board in chess.CHECK
+        self.in_checkmate = self.board in chess.CHECKMATE
+        self.in_draw = self.board in chess.DRAW
     
     @classmethod
     def from_fen(cls, fen: str) -> EvalBoard:
@@ -181,6 +198,7 @@ class EvalBoard():
         n.white_phase = get_phase_value(n.board, chess.WHITE)
         n.black_phase = get_phase_value(n.board, chess.BLACK)
         n.state_stack = []
+        n.update_status()
         return n
     
     def copy(self) -> EvalBoard:
@@ -191,6 +209,7 @@ class EvalBoard():
         n.white_phase = self.white_phase
         n.black_phase = self.black_phase
         n.state_stack = self.state_stack.copy()
+        n.in_check, n.in_checkmate, n.in_draw = self.in_check, self.in_checkmate, self.in_draw
         return n
     
     def pretty(self) -> str:
@@ -377,10 +396,6 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
-# list of things to do
-# add back single extensions
-# split endgame and middlegame evaluation in board class and make evaluation() function obsolete
-
 TIME_LIMIT = 10
 USE_UCI = "--uci" in sys.argv
 CASTLE_RIGHTS_BONUS = 10
@@ -391,7 +406,7 @@ MAX_PLY = 64
 MINIMUM_MOVE_TIME = 0.2
 END = 0
 MAX_PREFILL_TIME = max(0.5, MINIMUM_MOVE_TIME)
-CAPTURE_EXTENSION = False
+CHECK_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
 USE_GAVIOTA = True
@@ -417,9 +432,9 @@ if os.path.exists("gaviota_5"):
         tablebase.add_directory("gaviota_5/4")
         tablebase.add_directory("gaviota_5/3")
     except OSError:
-        ...
+        USE_GAVIOTA = False
 else:
-    ...
+    USE_GAVIOTA = False
 opening_book = polyglot.open_reader("komodo.bin")
 
 def get_input(b: EvalBoard) -> chess.Move:
@@ -871,7 +886,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     return alpha
 
 def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CAPTURE_EXTENSION, END
+    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CHECK_EXTENSION, END
     
     if time.perf_counter() >= END:
         raise TimeoutError
@@ -883,7 +898,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     elif b.status(chess.DRAW):
         return 0.0
     
-    if (~b[None]).__len__() <= 5:
+    if (~b[None]).__len__() <= 5 and USE_GAVIOTA:
         chs_board = chs.Board(b.fen())
         wdl = tablebase.get_wdl(chs_board)
         if wdl is not None:
@@ -897,7 +912,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                     return -100000.0 + ply + dtm
     
     in_check = b.status(chess.CHECK)
-    if in_check and CAPTURE_EXTENSION:
+    if in_check and CHECK_EXTENSION:
         depth += 1
     
     if depth <= 0:
