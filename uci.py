@@ -149,11 +149,7 @@ def uci_loop() -> None:
         elif cmd == "isready":
             print("readyok", flush=True)
         elif cmd == "ucinewgame":
-            main.transposition_table.clear()
-            main.tt_depth.clear()
-            main.tt_bestmove.clear()
-            main.tt_flags.clear()
-            main.tt_expire.clear()
+            main.tt.clear()
             main.clear_killer()
             main.clear_history()
             board = chess.Board()

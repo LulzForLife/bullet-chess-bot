@@ -8,11 +8,20 @@ import sys
 import os
 import time
 from enum import IntEnum, auto
+from dataclasses import dataclass
 
 class Flag(IntEnum):
     EXACT = auto()
     UPPER = auto()
     LOWER = auto()
+
+@dataclass(slots=True)
+class TTEntry:
+    depth: int
+    score: float
+    flag: Flag
+    move: chess.Move | None
+    age: int
 
 class EvalBoard():
     __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw")
@@ -414,11 +423,7 @@ PONDER = False
 
 nodes_searched = 0
 
-transposition_table: dict[int, float] = {}
-tt_depth: dict[int, int] = {}
-tt_bestmove: dict[int, chess.Move | None] = {}
-tt_flags: dict[int, Flag] = {}
-tt_expire: dict[int, int] = {}
+tt: dict[str, TTEntry] = {}
 
 killer_moves: list[list[None | chess.Move]] = [[None, None] for _ in range(MAX_PLY)]
 history: dict[chess.Color, dict[chess.Move, int]] = {
@@ -497,21 +502,17 @@ def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tupl
     return None, None
 
 def clean_tt(b: EvalBoard) -> None:
-    global transposition_table, tt_depth, tt_flags, tt_bestmove, tt_expire
+    global tt
     min_date = b.fullmove_number - 1
 
     hashes_to_delete = []
 
-    for b_hash, date in tt_expire.items():
-        if date < min_date:
+    for b_hash, entry in tt.items():
+        if entry.age < min_date:
             hashes_to_delete.append(b_hash)
 
     for b_hash in hashes_to_delete:
-        del transposition_table[b_hash]
-        del tt_depth[b_hash]
-        del tt_flags[b_hash]
-        del tt_bestmove[b_hash]
-        del tt_expire[b_hash]
+        del tt[b_hash]
 
 def clear_killer() -> None:
     global killer_moves, MAX_PLY
@@ -668,12 +669,13 @@ def evaluate(b: chess.Board) -> float:
     return evaluation
 
 def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
+    global tt
     nb = b.copy()
     pv: list[str] = [move.uci()]
     nb.apply(move)
     b_hash = hash(nb)
-    while b_hash in transposition_table:
-        bestmove = tt_bestmove[b_hash]
+    while b_hash in tt:
+        bestmove = tt[b_hash].move
         if bestmove not in nb.legal_moves():
             break
         pv.append(bestmove.uci()) # type: ignore
@@ -682,77 +684,95 @@ def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
-    #'''
-    global PIECE_VALUES, CASTLE_BONUS, history, killer_moves, tt_bestmove
-    
-    b_hash = hash(b)
+    piece_values = PIECE_VALUES
+    history_side = history[b.turn]
+    legal_moves = b.legal_moves
 
-    killer0 = killer_moves[ply][0]
-    killer1 = killer_moves[ply][1]
+    is_capture = b.is_capture
+    is_castling = b.is_castling
+    status = b.status
+    board_get = b.board.__getitem__
 
-    tt_move = tt_bestmove.get(b_hash, None)
-    tt_moves = []
-    winning_captures_and_promotions = []
-    equal_captures = []
+    killer0, killer1 = killer_moves[ply]
+
+    tt_entry = tt.get(b.fen())
+    if tt_entry is not None:
+        tt_move = tt_entry.move
+    else:
+        tt_move = None
+
+    winning: list[tuple[chess.Move, float]] = []
+    equal: list[chess.Move] = []
+    losing: list[tuple[chess.Move, float]] = []
+    quiets: list[tuple[chess.Move, float]] = []
+    castling: list[chess.Move] = []
+
     killer0_exists = False
     killer1_exists = False
-    killers = []
-    losing_captures = []
-    castling = []
-    moves: list[tuple[chess.Move, float]] = []
-    
-    for move in b.legal_moves():
-        if move == tt_move:
-            tt_moves.append(move)
-            continue
-        is_capture = b.is_capture(move)
-        is_promo = move.is_promotion()
-        
-        if captures_only and not (is_capture or (is_promo and move.promotion == chess.QUEEN) or b.status(chess.CHECK)):
-            continue
-        
-        if is_promo:
-            winning_captures_and_promotions.append((move, PIECE_VALUES[move.promotion])) # type: ignore
-        elif is_capture:
-            if b[move.destination] is None:
-                destination_piece_type = chess.PAWN
-            else:
-                destination_piece_type = b[move.destination].piece_type  # type: ignore
-            origin_piece_type = b[move.origin].piece_type
-            if destination_piece_type == origin_piece_type:
-                equal_captures.append(move)
-            else:
-                value = PIECE_VALUES[destination_piece_type] - PIECE_VALUES[origin_piece_type]
-                if value > 0:
-                    winning_captures_and_promotions.append((move, value))
-                else:
-                    losing_captures.append((move, value))
-        else:
-            if move == killer0:
-                killer0_exists = True
-            elif move == killer1:
-                killer1_exists = True
-            else:
-                if b.is_castling(move):
-                    castling.append(move)
-                else:
-                    moves.append((move, history[b.turn].get(move, 0)))
-    
-    winning_captures_and_promotions.sort(key=lambda t: -t[1])
-    losing_captures.sort(key=lambda t: -t[1])
-    if killer0_exists:
-        killers.append(killer0)
-    if killer1_exists:
-        killers.append(killer1)
-    moves.sort(key=lambda t: -t[1])
 
-    return (tt_moves + 
-            [m[0] for m in winning_captures_and_promotions] + 
-            equal_captures +
-            killers + 
-            [m[0] for m in losing_captures] + 
-            castling +
-            [m[0] for m in moves])
+    in_check = status(chess.CHECK)
+
+    for move in legal_moves():
+        if move == tt_move:
+            continue
+
+        capture = is_capture(move)
+        promo = move.is_promotion()
+
+        if captures_only and not (
+            capture or
+            (promo and move.promotion == chess.QUEEN) or
+            in_check
+        ):
+            continue
+
+        if promo:
+            winning.append((move, piece_values[move.promotion])) # type: ignore
+            continue
+
+        if capture:
+            victim = board_get(move.destination)
+            victim_type = chess.PAWN if victim is None else victim.piece_type
+
+            attacker_type = board_get(move.origin).piece_type # type: ignore
+            score = piece_values[victim_type] - piece_values[attacker_type]
+
+            if score > 0:
+                winning.append((move, score))
+            elif score == 0:
+                equal.append(move)
+            else:
+                losing.append((move, score))
+
+            continue
+
+        if move == killer0:
+            killer0_exists = True
+            continue
+
+        if move == killer1:
+            killer1_exists = True
+            continue
+
+        if is_castling(move):
+            castling.append(move)
+        else:
+            quiets.append((move, history_side.get(move, 0)))
+
+    winning.sort(key=lambda x: x[1], reverse=True)
+    losing.sort(key=lambda x: x[1], reverse=True)
+    quiets.sort(key=lambda x: x[1], reverse=True)
+
+    return (
+        ([tt_move] if tt_move is not None else []) +
+        [m for m, _ in winning] +
+        equal +
+        ([killer0] if killer0_exists else []) +
+        ([killer1] if killer1_exists else []) +
+        [m for m, _ in losing] +
+        castling +
+        [m for m, _ in quiets]
+    ) # type: ignore
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
@@ -765,17 +785,13 @@ def store_history(move: chess.Move, depth: int, turn: chess.Color) -> None:
 
     history[turn][move] = history[turn].get(move, 0) + (depth * depth)
 
-def store_tt(b: EvalBoard, b_hash: int, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, tt_pos
-
-    transposition_table[b_hash] = score
-    tt_depth[b_hash] = depth
-    tt_bestmove[b_hash] = move
-    tt_flags[b_hash] = flag
-    tt_expire[b_hash] = b.fullmove_number
+def store_tt(b: EvalBoard, b_fen: str, move: chess.Move | None, depth: int, score: float, flag: Flag) -> None:
+    global tt
+    entry = TTEntry(depth, score, flag, move, b.fullmove_number)
+    tt[b_fen] = entry
 
 def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, DELTA, END
+    global tt, nodes_searched, DELTA, END
 
     if time.perf_counter() >= END:
         raise TimeoutError
@@ -801,20 +817,22 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
             if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
                 return alpha
     
-    b_hash = hash(b)
+    b_fen = b.fen()
+    entry = tt.get(b_fen)
+    in_tt = b_fen in tt
     original_alpha = alpha
     first_move = None
     best_move = None
 
-    if b_hash in transposition_table:
-        score = transposition_table[b_hash]
+    if in_tt:
+        score = entry.score # type: ignore
 
         if 90000.0 < score < math.inf:
             score -= ply
         elif -math.inf < score < -90000.0:
             score += ply
         
-        flag = tt_flags[b_hash]
+        flag = entry.flag # type: ignore
         if flag == Flag.EXACT:
             return score
         elif flag == Flag.LOWER and score >= beta:
@@ -822,12 +840,11 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         elif flag == Flag.UPPER and score <= alpha:
             return alpha
             
-        first_move = tt_bestmove[b_hash]
+        first_move = entry.move # type: ignore
         
         if (first_move is not None and
             (b.is_capture(first_move) or
-             first_move.is_promotion() and first_move.promotion is chess.QUEEN) and
-             first_move in b.legal_moves()):
+             first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
             b.apply(first_move)
             evaluation = -quiesce(b, -beta, -alpha, ply + 1)
             b.undo()
@@ -839,8 +856,8 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
                 elif -math.inf < tt_score < -90000.0:
                     tt_score -= ply
                 
-                if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
-                    store_tt(b, b_hash, first_move, 0, tt_score, Flag.LOWER)
+                if entry.depth <= 0: # type: ignore
+                    store_tt(b, b_fen, first_move, 0, tt_score, Flag.LOWER)
                 
                 return beta
             
@@ -849,7 +866,12 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
                 best_move = first_move
     
     for move in order_moves(b, ply, captures_only = True):
-        b.apply(move)
+        try:
+            b.apply(move)
+        except Exception:
+            print(b.pretty())
+            print(move)
+            raise
         evaluation = -quiesce(b, -beta, -alpha, ply + 1)
         b.undo()
 
@@ -860,8 +882,8 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
             elif -math.inf < tt_score < -90000.0:
                 tt_score -= ply
             
-            if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
-                store_tt(b, b_hash, move, 0, tt_score, Flag.LOWER)
+            if not in_tt or entry.depth <= 0: # type: ignore
+                store_tt(b, b_fen, move, 0, tt_score, Flag.LOWER)
 
             return beta
             
@@ -875,18 +897,18 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     elif -math.inf < tt_score < -90000.0:
         tt_score -= ply
 
-    if b_hash not in transposition_table or tt_depth[b_hash] <= 0:
+    if not in_tt or entry.depth <= 0: # type: ignore
         if alpha > original_alpha:
             tt_flag = Flag.EXACT
         else:
             tt_flag = Flag.UPPER
         
-        store_tt(b, b_hash, best_move, 0, tt_score, tt_flag)
+        store_tt(b, b_fen, best_move, 0, tt_score, tt_flag)
 
     return alpha
 
 def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0) -> float:
-    global transposition_table, tt_depth, tt_bestmove, tt_flags, tt_expire, nodes_searched, killer_moves, LMR, CHECK_EXTENSION, END
+    global tt, nodes_searched, killer_moves, LMR, CHECK_EXTENSION, END, USE_QUIESCE
     
     if time.perf_counter() >= END:
         raise TimeoutError
@@ -918,23 +940,21 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
     
-    b_hash = hash(b)
+    b_fen = b.fen()
+    entry = tt.get(b_fen)
     original_alpha = alpha
-    first_move = None
     best_move = None
     moves_searched = 0
-    ordered_moves = None
 
-    if b_hash in transposition_table and tt_depth[b_hash] >= depth:
-        evaluation = transposition_table[b_hash]
+    if b_fen in tt and entry.depth >= depth: # type: ignore
+        evaluation = entry.score # type: ignore
 
         if 90000.0 < evaluation < math.inf:
             evaluation -= ply
         elif -math.inf < evaluation < -90000.0:
             evaluation += ply
         
-        flag = tt_flags[b_hash]
-        first_move = tt_bestmove[b_hash]
+        flag = entry.flag # type: ignore
 
         if flag == Flag.EXACT:
             return evaluation
@@ -944,7 +964,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             return alpha
 
     if not in_check:
-        player_phase = min(get_phase_value(b, chess.WHITE), get_phase_value(b, chess.BLACK))
+        player_phase = min(b.white_phase, b.black_phase)
         if player_phase >= 8:
             r = 3
         elif player_phase >= 2:
@@ -958,11 +978,8 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             b.undo()
             if null_score >= beta:
                 return beta
-
-    if ordered_moves is None:
-        ordered_moves = order_moves(b, ply)
         
-    for move in ordered_moves:
+    for move in order_moves(b, ply):
         moves_searched += 1
         b.apply(move)
         evaluation = None
@@ -997,7 +1014,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             elif -math.inf < tt_score < -90000.0:
                 tt_score -= ply
                 
-            store_tt(b, b_hash, move, depth, tt_score, Flag.LOWER)
+            store_tt(b, b_fen, move, depth, tt_score, Flag.LOWER)
 
             if not b.is_capture(move) and not move.is_promotion():
                 store_killer(move, ply)
@@ -1019,7 +1036,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     else:
         tt_flag = Flag.UPPER
 
-    store_tt(b, b_hash, best_move, depth, tt_score, tt_flag)
+    store_tt(b, b_fen, best_move, depth, tt_score, tt_flag)
     return alpha
 
 def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY) -> tuple[chess.Move | None, float | str]:
