@@ -120,9 +120,6 @@ def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> 
     )
     thread.start()
 
-    if not is_ponder:
-        main.END = time.perf_counter() + time_limit
-
 def uci_loop() -> None:
     """Core text input stream orchestration loop compliant with the UCI specification."""
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
