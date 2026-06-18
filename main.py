@@ -251,12 +251,12 @@ class EvalBoard():
         return (self.mg_evaluation * mg_pct) + (self.eg_evaluation * eg_pct)
 
 PIECE_VALUES = {
-    chess.KING: 60000.0,
-    chess.QUEEN: 900.0,
-    chess.ROOK: 490.0,
-    chess.BISHOP: 320.0,
-    chess.KNIGHT: 290.0,
-    chess.PAWN: 100.0
+    chess.KING: 60000,
+    chess.QUEEN: 900,
+    chess.ROOK: 490,
+    chess.BISHOP: 320,
+    chess.KNIGHT: 290,
+    chess.PAWN: 100
 }
 
 PHASE_VALUES = {
@@ -412,7 +412,7 @@ DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 MAX_PLY = 64
-MINIMUM_MOVE_TIME = 0.2
+MINIMUM_MOVE_TIME = min(0.2, TIME_LIMIT)
 END = 0
 MAX_PREFILL_TIME = max(0.5, MINIMUM_MOVE_TIME)
 CHECK_EXTENSION = False
@@ -673,14 +673,14 @@ def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
     nb = b.copy()
     pv: list[str] = [move.uci()]
     nb.apply(move)
-    b_hash = hash(nb)
-    while b_hash in tt:
-        bestmove = tt[b_hash].move
+    b_fen = nb.fen()
+    while b_fen in tt:
+        bestmove = tt[b_fen].move
         if bestmove not in nb.legal_moves():
             break
         pv.append(bestmove.uci()) # type: ignore
         nb.apply(bestmove)
-        b_hash = hash(nb)
+        b_fen = nb.fen()
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
@@ -984,11 +984,13 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
         b.apply(move)
         evaluation = None
 
+        is_capture = b.is_capture(move)
+        is_promotion = move.is_promotion()
         can_reduce = (
             moves_searched > 3 and
             depth >= LMR and
-            not b.is_capture(move) and
-            not move.is_promotion() and
+            not is_capture and
+            not is_promotion and
             not in_check
         )
 
@@ -1016,7 +1018,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                 
             store_tt(b, b_fen, move, depth, tt_score, Flag.LOWER)
 
-            if not b.is_capture(move) and not move.is_promotion():
+            if not is_capture and not is_promotion:
                 store_killer(move, ply)
                 store_history(move, depth, b.turn)
             return beta
