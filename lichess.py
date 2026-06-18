@@ -4,8 +4,8 @@ import main  # Added import for the custom engine
 
 # 1. Authenticate with Lichess
 try:
-    with open("lichess-api.yml", 'r') as f:
-        TOKEN = f.read().split(": ")[1].removeprefix("\"").removesuffix("\"")
+    with open("lichess-api-key", 'r') as f:
+        TOKEN = f.read()
 except KeyboardInterrupt:
     raise
 except Exception:
@@ -108,9 +108,9 @@ for event in client.bots.stream_incoming_events():
                 eval_board = main.EvalBoard.from_fen(board.fen())
                 
                 # Fetch best move (max_depth=100 arbitrarily set to rely on time_limit, identical to Script 2)
-                chosen_move, _ = main.get_best_move(eval_board, time_limit, 100)
+                chosen_move, evaluation = main.get_best_move(eval_board, time_limit, 100)
                 
                 if chosen_move:
                     # Send the move to Lichess
                     client.bots.make_move(game_id, chosen_move.uci())
-                    print(f"[{'White' if is_white else 'Black'}] Played move: {chosen_move.uci()} (Search Time Limit: {time_limit:.2f}s)")
+                    print(f"[{'White' if is_white else 'Black'}] Played move: {chosen_move.uci()} (Evaluation: {evaluation}, Search Time Limit: {time_limit:.2f}s)")
