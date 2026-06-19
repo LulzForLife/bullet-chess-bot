@@ -12,8 +12,6 @@ except Exception:
     print("Unable to parse lichess-api.yml")
     exit(1)
 
-print(f"Token selected: {TOKEN}")
-
 session = berserk.TokenSession(TOKEN)
 client = berserk.Client(session=session)
 

@@ -242,8 +242,10 @@ class EvalBoard():
     
     @property
     def evaluation(self) -> float:
-        if self.board in chess.CHECKMATE:
+        if self.in_checkmate:
             return -100000.0
+        elif self.in_draw:
+            return 0.0
         phase = min(24, self.white_phase + self.black_phase)
         mg_pct = phase / 24
         eg_pct = (24 - phase) / 24
@@ -1167,14 +1169,11 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 score_str = f"mate {int(moves_to_mate) if best_eval > 0 else -int(moves_to_mate)}"
             else:
                 score_str = f"cp {int(best_eval)}"
-
-            if best_move is not None:
-                pv = get_pv(b, best_move)
-            else:
-                raise ValueError
             
             if USE_UCI:
-                print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
+                if best_move is not None:
+                    pv = get_pv(b, best_move)
+                    print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
             else:
                 print(f"Depth: {depth} ({nps}nps)       ", end = "\r")
 

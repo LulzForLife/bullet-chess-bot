@@ -59,19 +59,20 @@ class DualInputStream:
         return data
 
 f = open("output.log", "w", encoding="utf-8")
+f.write("")
 
 sys.stdout = DualOutputStream(f, sys.__stdout__, prefix="[OUT] ")
 sys.stderr = DualOutputStream(f, sys.__stderr__, prefix="[ERR] ")
 sys.stdin = DualInputStream(f, sys.__stdin__, prefix="[IN ] ")
 
-def parse_position(board: chess.Board, tokens: list[str]) -> chess.Board:
+def parse_position(board: main.EvalBoard, tokens: list[str]) -> main.EvalBoard:
     """Parses standard UCI position strings into the engine's board state."""
     if not tokens:
         return board
     
     # Isolate base position setup
     if tokens[0] == "startpos":
-        board = chess.Board()
+        board = main.EvalBoard()
         remaining_tokens = tokens[1:]
     elif tokens[0] == "fen":
         if "moves" in tokens:
@@ -81,7 +82,7 @@ def parse_position(board: chess.Board, tokens: list[str]) -> chess.Board:
         else:
             fen_str = " ".join(tokens[1:])
             remaining_tokens = []
-        board = chess.Board.from_fen(fen_str)
+        board = main.EvalBoard.from_fen(fen_str)
     else:
         return board
 
@@ -151,8 +152,10 @@ def get_time(tokens, board) -> tuple[float, int]:
     
     return time_limit, max_depth
 
-def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> None:
+def parse_go(board: main.EvalBoard, tokens: list[str], is_ponder: bool = False) -> None:
     def run_and_print(board: main.EvalBoard, time_limit: float, max_depth: int) -> None:
+        if board.in_draw or board.in_checkmate:
+            raise ValueError
         best_move, _ = main.get_best_move(board, time_limit, max_depth)
         if best_move is None:
             best_move, _ = main.get_best_move(board, 86400, 1)
@@ -160,6 +163,12 @@ def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> 
             raise ValueError
         try:
             ponder_move = main.get_pv(board, best_move)[1]
+            board.apply(best_move)
+            board.apply(chess.Move.from_uci(ponder_move))
+            if board.in_checkmate or board.in_draw:
+                raise IndexError
+            board.undo()
+            board.undo()
             print(f"bestmove {best_move.uci()} ponder {ponder_move}", flush=True)
         except IndexError:
             print(f"bestmove {best_move.uci()}")
@@ -171,8 +180,7 @@ def parse_go(board: chess.Board, tokens: list[str], is_ponder: bool = False) -> 
 
     main.PONDER = is_ponder
 
-    # Execute engine iterative deepening search
-    b = main.EvalBoard.from_fen(board.fen())
+    b = board.copy()
     thread = threading.Thread(
         target=run_and_print,
         args=(b, time_limit, max_depth),
@@ -186,7 +194,7 @@ def uci_loop() -> None:
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
     main.USE_OPENING = True
     main.USE_GAVIOTA = os.path.exists("gaviota_5")
-    board = chess.Board()
+    board = main.EvalBoard()
     
     while True:
         line = sys.stdin.readline()
@@ -210,7 +218,7 @@ def uci_loop() -> None:
             main.tt.clear()
             main.clear_killer()
             main.clear_history()
-            board = chess.Board()
+            board = main.EvalBoard()
         elif cmd == "position":
             board = parse_position(board, parts[1:])
         elif cmd == "setoption":
