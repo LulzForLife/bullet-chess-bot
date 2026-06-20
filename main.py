@@ -24,7 +24,7 @@ class TTEntry:
     age: int
 
 class EvalBoard():
-    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw")
+    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw", "ks_w", "qs_w", "ks_b", "qs_b")
 
     def __init__(self) -> None:
         self.board = chess.Board()
@@ -36,6 +36,11 @@ class EvalBoard():
         self.in_check = self.board in chess.CHECK
         self.in_checkmate = self.board in chess.CHECKMATE
         self.in_draw = self.board in chess.DRAW
+
+        self.ks_w = self.board.castling_rights.kingside(chess.WHITE)
+        self.qs_w = self.board.castling_rights.queenside(chess.WHITE)
+        self.ks_b = self.board.castling_rights.kingside(chess.BLACK)
+        self.qs_b = self.board.castling_rights.queenside(chess.BLACK)
         
         self.state_stack = []
     
@@ -54,6 +59,13 @@ class EvalBoard():
             return self.in_draw
         raise NotImplementedError
     
+    def castling_rights_any(self, turn: chess.Color) -> bool:
+        if turn is chess.WHITE:
+            return self.ks_w or self.qs_w
+        elif turn is chess.BLACK:
+            return self.ks_b or self.ks_w
+        raise ValueError
+    
     def is_capture(self, move: chess.Move) -> bool:
         return move.is_capture(self.board)
     
@@ -67,7 +79,11 @@ class EvalBoard():
         return self.board.fen()
     
     def apply(self, move: chess.Move | None) -> None:
-        self.state_stack.append((self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase, self.in_check, self.in_checkmate, self.in_draw))
+        self.state_stack.append(
+            (self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
+             self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
+             self.qs_w, self.ks_b, self.qs_b)
+        )
 
         if move is None:
             self.board.apply(move)
@@ -76,110 +92,118 @@ class EvalBoard():
             self.eg_evaluation = -self.eg_evaluation
             return
         
-        is_capture = move.is_capture(self.board)
-        is_castling = move.is_castling(self.board)
-        is_en_passant = self.board.en_passant_square == move.destination and self.board[move.origin].piece_type is chess.PAWN # type: ignore
-        is_promotion = move.is_promotion()
+        self_board = self.board
 
-        turn = self.board.turn
-        origin_piece = self.board[move.origin]
-        piece_type = origin_piece.piece_type if origin_piece else chess.PAWN
+        origin_piece = self_board[move.origin]
+        dest_piece = self_board[move.destination]
+        origin_piece_type = origin_piece.piece_type # type: ignore
+        if dest_piece is not None:
+            dest_piece_type = dest_piece.piece_type
+        else:
+            dest_piece_type = None
+        
+        origin_idx = move.origin.index()
+        dest_idx = move.destination.index()
+        origin_idx_mir = MIRROR_BOARD[origin_idx]
+        dest_idx_mir = MIRROR_BOARD[dest_idx]
+
+        self_turn = self.turn
+        opp_turn = self_turn.opposite
+
+        is_capture = move.is_capture(self_board)
+        is_castling = move.is_castling(self_board)
+        is_en_passant = self_board.en_passant_square == move.destination and origin_piece is chess.PAWN # type: ignore
+        is_promotion = move.is_promotion()
 
         dSmg = dSeg = 0.0
         
-        if turn == chess.WHITE:
-            origin_idx = MIRROR_BOARD[move.origin.index()]
-            dest_idx = MIRROR_BOARD[move.destination.index()]
+        if self_turn is chess.WHITE:
+            psqt_old_mg = MIDDLEGAME_BONUS[origin_piece_type][origin_idx_mir]
+            psqt_new_mg = MIDDLEGAME_BONUS[origin_piece_type][dest_idx_mir]
+            psqt_old_eg = ENDGAME_BONUS[origin_piece_type][origin_idx_mir]
+            psqt_new_eg = ENDGAME_BONUS[origin_piece_type][dest_idx_mir]
         else:
-            origin_idx = move.origin.index()
-            dest_idx = move.destination.index()
+            psqt_old_mg = MIDDLEGAME_BONUS[origin_piece_type][origin_idx]
+            psqt_new_mg = MIDDLEGAME_BONUS[origin_piece_type][dest_idx]
+            psqt_old_eg = ENDGAME_BONUS[origin_piece_type][origin_idx]
+            psqt_new_eg = ENDGAME_BONUS[origin_piece_type][dest_idx]
 
-        psqt_old_mg = MIDDLEGAME_BONUS[piece_type][origin_idx]
-        psqt_new_mg = MIDDLEGAME_BONUS[piece_type][dest_idx]
         dSmg += (psqt_new_mg - psqt_old_mg)
-
-        psqt_old_eg = ENDGAME_BONUS[piece_type][origin_idx]
-        psqt_new_eg = ENDGAME_BONUS[piece_type][dest_idx]
         dSeg += (psqt_new_eg - psqt_old_eg)
 
         if is_capture:
-            piece_type = self.board[move.destination].piece_type # type: ignore
-            if self.turn is chess.WHITE:
-                index = move.destination.index()
-                self.black_phase -= PHASE_VALUES[piece_type]
+            mg_piece_value = eg_piece_value = PIECE_VALUES[dest_piece_type] # type: ignore
+
+            if self_turn is chess.WHITE:
+                mg_piece_value += MIDDLEGAME_BONUS[dest_piece_type][dest_idx] # type: ignore
+                eg_piece_value += ENDGAME_BONUS[dest_piece_type][dest_idx] # type: ignore
             else:
-                index = MIRROR_BOARD[move.destination.index()]
-                self.white_phase -= PHASE_VALUES[piece_type]
-            mg_piece_value = eg_piece_value = PIECE_VALUES[piece_type]
-            mg_piece_value += MIDDLEGAME_BONUS[piece_type][index]
-            eg_piece_value += ENDGAME_BONUS[piece_type][index]
+                mg_piece_value += MIDDLEGAME_BONUS[dest_piece_type][dest_idx_mir] # type: ignore
+                eg_piece_value += ENDGAME_BONUS[dest_piece_type][dest_idx_mir] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
         if is_promotion:
             piece_type = move.promotion
-            if self.turn is chess.WHITE:
-                index = move.destination.index()
-                self.white_phase += PHASE_VALUES[piece_type] - PHASE_VALUES[chess.PAWN] # type: ignore
-            else:
-                index = MIRROR_BOARD[move.destination.index()]
-                self.black_phase += PHASE_VALUES[piece_type] - PHASE_VALUES[chess.PAWN] # type: ignore
             mg_piece_value = eg_piece_value = PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN] # type: ignore
-            mg_piece_value += MIDDLEGAME_BONUS[piece_type][index] # type: ignore
-            eg_piece_value += ENDGAME_BONUS[piece_type][index] # type: ignore
+            
+            if self_turn is chess.WHITE:
+                mg_piece_value += MIDDLEGAME_BONUS[piece_type][dest_idx] # type: ignore
+                eg_piece_value += ENDGAME_BONUS[piece_type][dest_idx] # type: ignore
+            else:
+                mg_piece_value += MIDDLEGAME_BONUS[piece_type][dest_idx_mir] # type: ignore
+                eg_piece_value += ENDGAME_BONUS[piece_type][dest_idx_mir] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
-        if is_en_passant:
-            
-            if self.turn is chess.WHITE:
-                index = move.destination.south(1).index() # type: ignore
-                self.black_phase -= PHASE_VALUES[chess.PAWN]
-            else:
-                index = MIRROR_BOARD[move.destination.north(1).index()] # type: ignore
-                self.white_phase -= PHASE_VALUES[chess.PAWN]
-            
+        if is_en_passant:            
             mg_piece_value = eg_piece_value = PIECE_VALUES[chess.PAWN]
-            mg_piece_value += MIDDLEGAME_BONUS[chess.PAWN][index]
-            eg_piece_value += ENDGAME_BONUS[chess.PAWN][index]
+
+            if self_turn is chess.WHITE:
+                mg_piece_value += MIDDLEGAME_BONUS[chess.PAWN][dest_idx - 8]
+                eg_piece_value += ENDGAME_BONUS[chess.PAWN][dest_idx - 8]
+            else:
+                mg_piece_value += MIDDLEGAME_BONUS[chess.PAWN][dest_idx_mir - 8]
+                eg_piece_value += ENDGAME_BONUS[chess.PAWN][dest_idx_mir - 8]
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
         
         if is_castling:
-            piece_type = chess.ROOK
-            if turn == chess.WHITE:
-                origin_idx = MIRROR_BOARD[move.origin.index()]
-                dest_idx = MIRROR_BOARD[move.destination.index()]
+            if self_turn is chess.WHITE:
+                if dest_idx == 6:
+                    dSmg += KS_MG
+                    dSeg += KS_EG
+                else:
+                    dSmg += QS_MG
+                    dSeg += QS_EG
             else:
-                origin_idx = move.origin.index()
-                dest_idx = move.destination.index()
+                if dest_idx == 62:
+                    dSmg += KS_MG
+                    dSeg += KS_EG
+                else:
+                    dSmg += QS_MG
+                    dSeg += QS_EG
 
-            psqt_old_mg = MIDDLEGAME_BONUS[piece_type][origin_idx]
-            psqt_new_mg = MIDDLEGAME_BONUS[piece_type][dest_idx]
-            dSmg += (psqt_new_mg - psqt_old_mg)
-
-            psqt_old_eg = ENDGAME_BONUS[piece_type][origin_idx]
-            psqt_new_eg = ENDGAME_BONUS[piece_type][dest_idx]
-            dSeg += (psqt_new_eg - psqt_old_eg)
-
-        old_castle_self = self.board.castling_rights.any(self.board.turn)
-        old_castle_opp = self.board.castling_rights.any(self.board.turn.opposite)
+        old_castle_self = self.castling_rights_any(self_turn)
+        old_castle_opp = self.castling_rights_any(opp_turn)
 
         self.board.apply(move)
         self.update_status()
+        if is_castling or origin_piece_type is chess.KING or origin_piece_type is chess.ROOK or dest_piece_type is chess.ROOK:
+            self.update_castling_rights()
 
-        new_castle_self = self.board.castling_rights.any(self.board.turn.opposite)
-        new_castle_opp = self.board.castling_rights.any(self.board.turn)
+        new_castle_self = self.castling_rights_any(self_turn)
+        new_castle_opp = self.castling_rights_any(opp_turn)
 
         if old_castle_self and not new_castle_self:
-            dSmg -= CASTLE_RIGHTS_BONUS
-            dSeg -= CASTLE_RIGHTS_BONUS
-        if old_castle_opp and not new_castle_opp:
             dSmg += CASTLE_RIGHTS_BONUS
             dSeg += CASTLE_RIGHTS_BONUS
+        if old_castle_opp and not new_castle_opp:
+            dSmg -= CASTLE_RIGHTS_BONUS
+            dSeg -= CASTLE_RIGHTS_BONUS
 
         self.mg_evaluation = -self.mg_evaluation - dSmg
         self.eg_evaluation = -self.eg_evaluation - dSeg
@@ -189,7 +213,11 @@ class EvalBoard():
     def undo(self) -> chess.Move | None:
         move = self.board.undo()
 
-        self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase, self.in_check, self.in_checkmate, self.in_draw = self.state_stack.pop()
+        (
+            self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
+            self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
+            self.qs_w, self.ks_b, self.qs_b
+        ) = self.state_stack.pop()
             
         return move
     
@@ -197,6 +225,12 @@ class EvalBoard():
         self.in_check = self.board in chess.CHECK
         self.in_checkmate = self.board in chess.CHECKMATE
         self.in_draw = self.board in chess.DRAW
+    
+    def update_castling_rights(self) -> None:
+        self.ks_w = self.board.castling_rights.kingside(chess.WHITE)
+        self.qs_w = self.board.castling_rights.queenside(chess.WHITE)
+        self.ks_b = self.board.castling_rights.kingside(chess.BLACK)
+        self.qs_b = self.board.castling_rights.queenside(chess.BLACK)
     
     @classmethod
     def from_fen(cls, fen: str) -> EvalBoard:
@@ -231,10 +265,6 @@ class EvalBoard():
     @property
     def turn(self) -> chess.Color:
         return self.board.turn
-    
-    @property
-    def castling_rights(self) -> chess.CastlingRights:
-        return self.board.castling_rights
     
     @property
     def history(self) -> list[chess.Move]:
@@ -407,16 +437,23 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
-TIME_LIMIT = 10
-USE_UCI = "--uci" in sys.argv
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
+
+KS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.F8.index()] - MIDDLEGAME_BONUS[chess.ROOK][chess.H8.index()]
+KS_EG = ENDGAME_BONUS[chess.ROOK][chess.F8.index()] - ENDGAME_BONUS[chess.ROOK][chess.H8.index()]
+QS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS[chess.ROOK][chess.A8.index()]
+QS_EG = ENDGAME_BONUS[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS[chess.ROOK][chess.A8.index()]
+
+TIME_LIMIT = 10
 MAX_PLY = 64
 MINIMUM_MOVE_TIME = min(0.2, TIME_LIMIT)
-END = 0
 MAX_PREFILL_TIME = max(0.5, MINIMUM_MOVE_TIME)
+END = 0
+
+USE_UCI = "--uci" in sys.argv
 CHECK_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
@@ -507,14 +544,14 @@ def clean_tt(b: EvalBoard) -> None:
     global tt
     min_date = b.fullmove_number - 1
 
-    hashes_to_delete = []
+    expired = []
 
-    for b_hash, entry in tt.items():
+    for b_fen, entry in tt.items():
         if entry.age < min_date:
-            hashes_to_delete.append(b_hash)
+            expired.append(b_fen)
 
-    for b_hash in hashes_to_delete:
-        del tt[b_hash]
+    for b_fen in expired:
+        del tt[b_fen]
 
 def clear_killer() -> None:
     global killer_moves, MAX_PLY
@@ -643,7 +680,7 @@ def evaluate(b: chess.Board) -> float:
     for square in white_bitboard:
         piece= b[square]
         if piece is None:
-            continue
+            raise ValueError
         piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
         psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
@@ -660,13 +697,13 @@ def evaluate(b: chess.Board) -> float:
         psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
+    if b.turn == chess.BLACK:
+        evaluation = -evaluation
+    
     if b.castling_rights.any(chess.WHITE):
         evaluation += CASTLE_RIGHTS_BONUS
     if b.castling_rights.any(chess.BLACK):
         evaluation -= CASTLE_RIGHTS_BONUS
-
-    if b.turn == chess.BLACK:
-        evaluation = -evaluation
 
     return evaluation
 
@@ -936,8 +973,6 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                     return -100000.0 + ply + dtm
     
     in_check = b.status(chess.CHECK)
-    if in_check and CHECK_EXTENSION:
-        depth += 1
     
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
