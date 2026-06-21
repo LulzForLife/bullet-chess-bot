@@ -741,6 +741,8 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
             break
         if bestmove not in nb.legal_moves():
             break
+        if nb.is_game_over:
+            break
         pv.append(bestmove.uci()) # type: ignore
         nb.apply(bestmove)
         b_fen = nb.fen()
@@ -1129,7 +1131,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                         nps = int(nodes_searched / elapsed) if elapsed > 0 else 0
                         pv = get_pv(b, opening_move)
                         if print_info:
-                            print(f"info depth {depth} score {evaluation} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
+                            print(f"info depth {depth} score {evaluation} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
                     elif not USE_UCI and print_info:
                         print(f"Depth: {depth} (prefill)    ", end = '\r')
             except TimeoutError:
@@ -1150,7 +1152,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     elapsed_ms = max(1, int(elapsed * 1000))
                     pv = get_pv(b, gaviota_move)
                     if print_info:
-                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {" ".join(pv)}", flush=True)
+                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {' '.join(pv)}", flush=True)
                 else:
                     prefix = "-" if b.turn is chess.WHITE else ""
                     score_str = f"{prefix}M{abs(moves_to_mate)}"
@@ -1166,6 +1168,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
     try:
         for depth in range(1, max_depth + 1):
+            print(start_time, time.perf_counter(), END)
 
             b_check = b.copy()
 
@@ -1236,7 +1239,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 if best_move is not None:
                     pv = get_pv(b, best_move)
                     if print_info:
-                        print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
+                        print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
             else:
                 if print_info:
                     print(f"Depth: {depth} ({nps}nps)       ", end = "\r")

@@ -183,7 +183,7 @@ def parse_go(board: main.EvalBoard, tokens: list[str], is_ponder: bool = False) 
     b = board.copy()
     thread = threading.Thread(
         target=run_and_print,
-        args=(b, time_limit, max_depth),
+        args=(b, TIME_LIMIT, max_depth),
         daemon=True
     )
     thread.start()
