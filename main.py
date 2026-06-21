@@ -726,14 +726,19 @@ def evaluate(b: chess.Board) -> float:
 
     return evaluation
 
-def get_pv(b: EvalBoard | chess.Board, move: chess.Move) -> list[str]:
+def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     global tt
     nb = b.copy()
     pv: list[str] = [move.uci()]
     nb.apply(move)
     b_fen = nb.fen()
-    while b_fen in tt:
-        bestmove = tt[b_fen].move
+    while True:
+        if nb.piece_count <= 5 and USE_GAVIOTA:
+            bestmove = get_best_tablebase_move(nb)[0]
+        elif b_fen in tt:
+            bestmove = tt[b_fen].move
+        else:
+            break
         if bestmove not in nb.legal_moves():
             break
         pv.append(bestmove.uci()) # type: ignore
@@ -1118,15 +1123,17 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 for depth in range(MAX_PLY):
                     new_b = b.copy()
                     evaluation = search_moves(new_b, depth, -150000.0, 150000.0)
-                    if not USE_UCI and print_info:
+                    if USE_UCI:
+                        elapsed = time.perf_counter() - start_time
+                        elapsed_ms = max(1, int(elapsed * 1000))
+                        nps = int(nodes_searched / elapsed) if elapsed > 0 else 0
+                        pv = get_pv(b, opening_move)
+                        if print_info:
+                            print(f"info depth {depth} score {evaluation} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {" ".join(pv)}", flush=True)
+                    elif not USE_UCI and print_info:
                         print(f"Depth: {depth} (prefill)    ", end = '\r')
             except TimeoutError:
                 ...
-            if USE_UCI:
-                elapsed = time.perf_counter() - start_time
-                elapsed_ms = max(1, int(elapsed * 1000))
-                if print_info:
-                    print(f"info depth 0 score {evaluation} nodes 0 nps 0 time {elapsed_ms} pv {opening_move.uci()}", flush=True)
             return (opening_move, evaluation)
 
     if b.piece_count <= 5 and USE_GAVIOTA:
@@ -1138,11 +1145,12 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 plies_to_mate = 100000.0 - abs(score)
                 moves_to_mate = math.ceil(plies_to_mate / 2)
                 if USE_UCI:
-                    score_str = f"mate {int(moves_to_mate) if b.turn is chess.WHITE else -int(moves_to_mate)}"
+                    score_str = f"mate {moves_to_mate}"
                     elapsed = time.perf_counter() - start_time
                     elapsed_ms = max(1, int(elapsed * 1000))
+                    pv = get_pv(b, gaviota_move)
                     if print_info:
-                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {gaviota_move.uci()}", flush=True)
+                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {" ".join(pv)}", flush=True)
                 else:
                     prefix = "-" if b.turn is chess.WHITE else ""
                     score_str = f"{prefix}M{abs(moves_to_mate)}"
