@@ -931,12 +931,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
                 best_move = first_move
     
     for move in order_moves(b, ply, captures_only = True):
-        try:
-            b.apply(move)
-        except Exception:
-            print(b.pretty())
-            print(move)
-            raise
+        b.apply(move)
         evaluation = -quiesce(b, -beta, -alpha, ply + 1)
         b.undo()
 
@@ -1168,7 +1163,6 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
     try:
         for depth in range(1, max_depth + 1):
-            print(start_time, time.perf_counter(), END)
 
             b_check = b.copy()
 
