@@ -24,7 +24,7 @@ class TTEntry:
     age: int
 
 class EvalBoard():
-    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count")
+    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "fen")
 
     def __init__(self) -> None:
         self.board = chess.Board()
@@ -44,6 +44,9 @@ class EvalBoard():
 
         self.piece_count = 0
         self.update_piece_count()
+
+        self.fen = ""
+        self.update_fen()
         
         self.state_stack = []
     
@@ -78,14 +81,12 @@ class EvalBoard():
     def legal_moves(self) -> list[chess.Move]:
         return self.board.legal_moves()
     
-    def fen(self) -> str:
-        return self.board.fen()
-    
     def apply(self, move: chess.Move | None) -> None:
         self.state_stack.append(
             (self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
              self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
-             self.qs_w, self.ks_b, self.qs_b, self.piece_count)
+             self.qs_w, self.ks_b, self.qs_b, self.piece_count,
+             self.fen)
         )
 
         if move is None:
@@ -93,6 +94,8 @@ class EvalBoard():
             self.update_status()
             self.mg_evaluation = -self.mg_evaluation
             self.eg_evaluation = -self.eg_evaluation
+            fen = self.fen
+            self.fen = fen.replace(" w ", " b ", 1) if " w " in fen else fen.replace(" b ", " w ", 1)
             return
         
         self_board = self.board
@@ -201,6 +204,7 @@ class EvalBoard():
         self.update_status()
         if is_castling or origin_piece_type is chess.KING or origin_piece_type is chess.ROOK or dest_piece_type is chess.ROOK:
             self.update_castling_rights()
+        self.update_fen()
 
         new_castle_self = self.castling_rights_any(self_turn)
         new_castle_opp = self.castling_rights_any(opp_turn)
@@ -223,7 +227,8 @@ class EvalBoard():
         (
             self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
             self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
-            self.qs_w, self.ks_b, self.qs_b, self.piece_count
+            self.qs_w, self.ks_b, self.qs_b, self.piece_count,
+            self.fen
         ) = self.state_stack.pop()
             
         return move
@@ -241,6 +246,9 @@ class EvalBoard():
 
     def update_piece_count(self) -> None:
         self.piece_count = (~self.board[None]).__len__()
+
+    def update_fen(self) -> None:
+        self.fen = self.board.fen()
     
     @classmethod
     def from_fen(cls, fen: str) -> EvalBoard:
@@ -255,6 +263,7 @@ class EvalBoard():
         n.update_piece_count()
         n.state_stack = []
         n.update_status()
+        n.fen = fen
         return n
     
     def copy(self) -> EvalBoard:
@@ -268,6 +277,7 @@ class EvalBoard():
         n.in_check, n.in_checkmate, n.in_draw = self.in_check, self.in_checkmate, self.in_draw
         n.ks_w, n.qs_w, n.ks_b, n.qs_b = self.ks_w, self.qs_w, self.ks_b, self.qs_b
         n.piece_count = self.piece_count
+        n.fen = self.fen
         return n
     
     def pretty(self) -> str:
@@ -514,7 +524,7 @@ def get_best_opening_move(board: EvalBoard) -> chess.Move | None:
     global opening_book
 
     try:
-        chs_board = chs.Board(board.fen())
+        chs_board = chs.Board(board.fen)
 
         best_move = opening_book.weighted_choice(chs_board)
 
@@ -534,7 +544,7 @@ def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tupl
 
     for move in board.legal_moves():
         board.apply(move)
-        chs_board = chs.Board(board.fen())
+        chs_board = chs.Board(board.fen)
         
         try:
             dtm_score = -tablebase.probe_dtm(chs_board)
@@ -731,7 +741,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     nb = b.copy()
     pv: list[str] = [move.uci()]
     nb.apply(move)
-    b_fen = nb.fen()
+    b_fen = nb.fen
     while True:
         if nb.piece_count <= 5 and USE_GAVIOTA:
             bestmove = get_best_tablebase_move(nb)[0]
@@ -745,7 +755,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
             break
         pv.append(bestmove.uci()) # type: ignore
         nb.apply(bestmove)
-        b_fen = nb.fen()
+        b_fen = nb.fen
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
@@ -757,10 +767,11 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
     is_castling = b.is_castling
     status = b.status
     board_get = b.board.__getitem__
+    not_captures_only = not captures_only
 
     killer0, killer1 = killer_moves[ply]
 
-    tt_entry = tt.get(b.fen())
+    tt_entry = tt.get(b.fen)
     if tt_entry is not None:
         tt_move = tt_entry.move
     else:
@@ -769,8 +780,9 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
     winning: list[tuple[chess.Move, float]] = []
     equal: list[chess.Move] = []
     losing: list[tuple[chess.Move, float]] = []
-    quiets: list[tuple[chess.Move, float]] = []
-    castling: list[chess.Move] = []
+    if not_captures_only:
+        quiets: list[tuple[chess.Move, float]] = []
+        castling: list[chess.Move] = []
 
     killer0_exists = False
     killer1_exists = False
@@ -783,16 +795,17 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
 
         capture = is_capture(move)
         promo = move.is_promotion()
+        promotion = move.promotion
 
         if captures_only and not (
             capture or
-            (promo and move.promotion == chess.QUEEN) or
+            (promo and promotion == chess.QUEEN) or
             in_check
         ):
             continue
 
         if promo:
-            winning.append((move, piece_values[move.promotion])) # type: ignore
+            winning.append((move, piece_values[promotion])) # type: ignore
             continue
 
         if capture:
@@ -819,25 +832,35 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
             killer1_exists = True
             continue
 
-        if is_castling(move):
-            castling.append(move)
-        else:
-            quiets.append((move, history_side.get(move, 0)))
+        if not_captures_only:
+            if is_castling(move):
+                castling.append(move) # type: ignore
+            else:
+                quiets.append((move, history_side.get(move, 0))) # type: ignore
 
     winning.sort(key=lambda x: x[1], reverse=True)
     losing.sort(key=lambda x: x[1], reverse=True)
-    quiets.sort(key=lambda x: x[1], reverse=True)
-
-    return (
-        ([tt_move] if tt_move is not None else []) +
-        [m for m, _ in winning] +
-        equal +
-        ([killer0] if killer0_exists else []) +
-        ([killer1] if killer1_exists else []) +
-        [m for m, _ in losing] +
-        castling +
-        [m for m, _ in quiets]
-    ) # type: ignore
+    if not_captures_only:
+        quiets.sort(key=lambda x: x[1], reverse=True) # type: ignore
+        return (
+            ([tt_move] if tt_move is not None else []) +
+            [m for m, _ in winning] +
+            equal +
+            ([killer0] if killer0_exists else []) +
+            ([killer1] if killer1_exists else []) +
+            [m for m, _ in losing] +
+            castling + # type: ignore
+            [m for m, _ in quiets] # type: ignore
+        )
+    else:
+        return (
+            ([tt_move] if tt_move is not None else []) +
+            [m for m, _ in winning] +
+            equal +
+            ([killer0] if killer0_exists else []) +
+            ([killer1] if killer1_exists else []) +
+            [m for m, _ in losing]
+        ) # type: ignore  
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
@@ -882,9 +905,9 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
             if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
                 return alpha
     
-    b_fen = b.fen()
+    b_fen = b.fen
     entry = tt.get(b_fen)
-    in_tt = b_fen in tt
+    in_tt = entry is not None
     original_alpha = alpha
     first_move = None
     best_move = None
@@ -981,7 +1004,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
         return 0.0
     
     if b.piece_count <= 5 and USE_GAVIOTA:
-        chs_board = chs.Board(b.fen())
+        chs_board = chs.Board(b.fen)
         wdl = tablebase.get_wdl(chs_board)
         if wdl is not None:
             if wdl == 0:
@@ -998,13 +1021,14 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
     
-    b_fen = b.fen()
+    b_fen = b.fen
     entry = tt.get(b_fen)
+    in_tt = entry is not None
     original_alpha = alpha
     best_move = None
     moves_searched = 0
 
-    if b_fen in tt and entry.depth >= depth: # type: ignore
+    if in_tt and entry.depth >= depth: # type: ignore
         evaluation = entry.score # type: ignore
 
         if 90000.0 < evaluation < math.inf:

@@ -3,3 +3,4 @@ python-chess
 requests
 py7zr
 berserk
+tqdm
