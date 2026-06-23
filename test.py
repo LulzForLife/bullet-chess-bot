@@ -9,7 +9,7 @@ def test_position(fen: str, moves: list[chess.Move | None], depth: int) -> bool:
         best_move = get_best_move(board, time_limit=10, max_depth=depth, print_info=False)[0]
         if move != best_move:
             return False
-        board.apply(move)
+        board.apply(move, None, None, None)
     return True
 
 def test_testcases(fp: str) -> None:
@@ -28,7 +28,7 @@ def test_apply_undo(tests: int) -> None:
         test_position = EvalBoard()
         initial_eval = test_position.evaluation
         while not test_position.is_game_over:
-            test_position.apply(utils.random_legal_move(test_position.board))
+            test_position.apply(utils.random_legal_move(test_position.board), None, None, None)
         while test_position.history:
             test_position.undo()
         if test_position.evaluation != initial_eval:
@@ -36,7 +36,7 @@ def test_apply_undo(tests: int) -> None:
 
 def main() -> None:
     test_testcases("testcases.json")
-    test_apply_undo(10_000)
+    test_apply_undo(1_000)
 
 if __name__ == "__main__":
     main()

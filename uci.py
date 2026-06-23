@@ -90,7 +90,7 @@ def parse_position(board: main.EvalBoard, tokens: list[str]) -> main.EvalBoard:
     if remaining_tokens and remaining_tokens[0] == "moves":
         for move_str in remaining_tokens[1:]:
             try:
-                board.apply(chess.Move.from_uci(move_str))
+                board.apply(chess.Move.from_uci(move_str), None, None, None)
             except ValueError:
                 continue
     return board
@@ -163,8 +163,8 @@ def parse_go(board: main.EvalBoard, tokens: list[str], is_ponder: bool = False) 
             raise ValueError
         try:
             ponder_move = main.get_pv(board, best_move)[1]
-            board.apply(best_move)
-            board.apply(chess.Move.from_uci(ponder_move))
+            board.apply(best_move, None, None, None)
+            board.apply(chess.Move.from_uci(ponder_move), None, None, None)
             if board.in_checkmate or board.in_draw:
                 raise IndexError
             board.undo()

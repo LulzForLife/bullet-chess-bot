@@ -66,7 +66,7 @@ while True:
                     board = main.EvalBoard()
                     if moves_played:
                         for move in moves_played.split():
-                            board.apply(chess.Move.from_uci(move))
+                            board.apply(chess.Move.from_uci(move), None, None, None)
 
                     my_turn = (board.turn == chess.WHITE and is_white) or (board.turn == chess.BLACK and not is_white)
 

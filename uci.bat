@@ -1,3 +1,3 @@
 @echo off
-python uci.py
+python -X jit uci.py
 pause

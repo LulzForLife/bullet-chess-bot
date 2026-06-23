@@ -10,6 +10,8 @@ import time
 from enum import IntEnum, auto
 from dataclasses import dataclass
 
+from collections.abc import Generator
+
 class Flag(IntEnum):
     EXACT = auto()
     UPPER = auto()
@@ -45,8 +47,7 @@ class EvalBoard():
         self.piece_count = 0
         self.update_piece_count()
 
-        self.fen = ""
-        self.update_fen()
+        self.fen = self.board.fen()
         
         self.state_stack = []
     
@@ -81,7 +82,7 @@ class EvalBoard():
     def legal_moves(self) -> list[chess.Move]:
         return self.board.legal_moves()
     
-    def apply(self, move: chess.Move | None) -> None:
+    def apply(self, move: chess.Move | None, is_capture: bool | None, is_promo: bool | None, is_castling: bool | None) -> None:
         self.state_stack.append(
             (self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
              self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
@@ -102,7 +103,12 @@ class EvalBoard():
 
         origin_piece = self_board[move.origin]
         dest_piece = self_board[move.destination]
-        origin_piece_type = origin_piece.piece_type # type: ignore
+        try:
+            origin_piece_type = origin_piece.piece_type # type: ignore
+        except Exception:
+            print(self.board.pretty())
+            print(move)
+            raise
         if dest_piece is not None:
             dest_piece_type = dest_piece.piece_type
         else:
@@ -116,10 +122,13 @@ class EvalBoard():
         self_turn = self.turn
         opp_turn = self_turn.opposite
 
-        is_capture = move.is_capture(self_board)
-        is_castling = move.is_castling(self_board)
         is_en_passant = self_board.en_passant_square == move.destination and origin_piece is chess.PAWN # type: ignore
-        is_promotion = move.is_promotion()
+        if is_capture is None:
+            is_capture = move.is_capture(self_board)
+        if is_promo is None:
+            is_promo = move.is_promotion()
+        if is_castling is None:
+            is_castling = move.is_castling(self.board)
 
         dSmg = dSeg = 0.0
         
@@ -152,7 +161,7 @@ class EvalBoard():
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
-        if is_promotion:
+        if is_promo:
             piece_type = move.promotion
             mg_piece_value = eg_piece_value = PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN] # type: ignore
             
@@ -204,7 +213,7 @@ class EvalBoard():
         self.update_status()
         if is_castling or origin_piece_type is chess.KING or origin_piece_type is chess.ROOK or dest_piece_type is chess.ROOK:
             self.update_castling_rights()
-        self.update_fen()
+        self.fen = self.board.fen()
 
         new_castle_self = self.castling_rights_any(self_turn)
         new_castle_opp = self.castling_rights_any(opp_turn)
@@ -246,9 +255,6 @@ class EvalBoard():
 
     def update_piece_count(self) -> None:
         self.piece_count = (~self.board[None]).__len__()
-
-    def update_fen(self) -> None:
-        self.fen = self.board.fen()
     
     @classmethod
     def from_fen(cls, fen: str) -> EvalBoard:
@@ -543,7 +549,7 @@ def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tupl
     best_wdl = -math.inf
 
     for move in board.legal_moves():
-        board.apply(move)
+        board.apply(move, None, None, None)
         chs_board = chs.Board(board.fen)
         
         try:
@@ -740,7 +746,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     global tt
     nb = b.copy()
     pv: list[str] = [move.uci()]
-    nb.apply(move)
+    nb.apply(move, None, None, None)
     b_fen = nb.fen
     while True:
         if nb.piece_count <= 5 and USE_GAVIOTA:
@@ -754,22 +760,22 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
         if nb.is_game_over:
             break
         pv.append(bestmove.uci()) # type: ignore
-        nb.apply(bestmove)
+        nb.apply(bestmove, None, None, None)
         b_fen = nb.fen
     return pv
 
-def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[chess.Move]:
+def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
     piece_values = PIECE_VALUES
     history_side = history[b.turn]
     legal_moves = b.legal_moves
 
     is_capture = b.is_capture
     is_castling = b.is_castling
-    status = b.status
     board_get = b.board.__getitem__
     not_captures_only = not captures_only
 
     killer0, killer1 = killer_moves[ply]
+    killer0_exists = killer1_exists = False
 
     tt_entry = tt.get(b.fen)
     if tt_entry is not None:
@@ -777,38 +783,35 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
     else:
         tt_move = None
 
-    winning: list[tuple[chess.Move, float]] = []
-    equal: list[chess.Move] = []
-    losing: list[tuple[chess.Move, float]] = []
+    winning: list[tuple[float, chess.Move, bool, bool, bool]] = []
+    equal: list[tuple[chess.Move, bool, bool, bool]] = []
+    losing: list[tuple[float, chess.Move, bool, bool, bool]] = []
     if not_captures_only:
-        quiets: list[tuple[chess.Move, float]] = []
-        castling: list[chess.Move] = []
+        quiets: list[tuple[float, chess.Move, bool, bool, bool]] = []
 
-    killer0_exists = False
-    killer1_exists = False
-
-    in_check = status(chess.CHECK)
+    if b.status(chess.CHECK):
+        captures_only = False
 
     for move in legal_moves():
         if move == tt_move:
             continue
 
+        if move == killer0:
+            killer0_exists = True
+
+        if move == killer1:
+            killer1_exists = True
+
         capture = is_capture(move)
         promo = move.is_promotion()
         promotion = move.promotion
-
-        if captures_only and not (
-            capture or
-            (promo and promotion == chess.QUEEN) or
-            in_check
-        ):
-            continue
+        castle = is_castling(move)
 
         if promo:
-            winning.append((move, piece_values[promotion])) # type: ignore
-            continue
-
-        if capture:
+            if not_captures_only or promotion is chess.QUEEN:
+                winning.append((piece_values[promotion], move, capture, promo, castle)) # type: ignore
+                continue
+        elif capture:
             victim = board_get(move.destination)
             victim_type = chess.PAWN if victim is None else victim.piece_type
 
@@ -816,51 +819,42 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> list[che
             score = piece_values[victim_type] - piece_values[attacker_type]
 
             if score > 0:
-                winning.append((move, score))
+                winning.append((score, move, capture, promo, castle))
             elif score == 0:
-                equal.append(move)
+                equal.append((move, capture, promo, castle))
             else:
-                losing.append((move, score))
+                losing.append((score, move, capture, promo, castle))
 
-            continue
-
-        if move == killer0:
-            killer0_exists = True
-            continue
-
-        if move == killer1:
-            killer1_exists = True
             continue
 
         if not_captures_only:
-            if is_castling(move):
-                castling.append(move) # type: ignore
-            else:
-                quiets.append((move, history_side.get(move, 0))) # type: ignore
+            quiets.append((history_side.get(move, 0), move, capture, promo, castle)) # type: ignore
 
-    winning.sort(key=lambda x: x[1], reverse=True)
-    losing.sort(key=lambda x: x[1], reverse=True)
+    if tt_move is not None:
+        yield (tt_move, is_capture(tt_move), tt_move.is_promotion(), is_castling(tt_move))
+
+    winning.sort(key=lambda x: x[0], reverse=True)
+    for move in winning:
+        yield move[1:]
+
+    for move in equal:
+        yield move
+
     if not_captures_only:
-        quiets.sort(key=lambda x: x[1], reverse=True) # type: ignore
-        return (
-            ([tt_move] if tt_move is not None else []) +
-            [m for m, _ in winning] +
-            equal +
-            ([killer0] if killer0_exists else []) +
-            ([killer1] if killer1_exists else []) +
-            [m for m, _ in losing] +
-            castling + # type: ignore
-            [m for m, _ in quiets] # type: ignore
-        )
-    else:
-        return (
-            ([tt_move] if tt_move is not None else []) +
-            [m for m, _ in winning] +
-            equal +
-            ([killer0] if killer0_exists else []) +
-            ([killer1] if killer1_exists else []) +
-            [m for m, _ in losing]
-        ) # type: ignore  
+
+        if killer0_exists and killer0 is not None:
+            yield (killer0, is_capture(killer0), killer0.is_promotion(), is_castling(killer0))
+
+        if killer1_exists and killer1 is not None:
+            yield (killer1, is_capture(killer1), killer1.is_promotion(), is_castling(killer1))
+
+        quiets.sort(key=lambda x: x[0], reverse=True) # type: ignore
+        for move in quiets: # type: ignore
+            yield move[1:]
+    
+    losing.sort(key=lambda x: x[0], reverse=True)
+    for move in losing:
+        yield move[1:]
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
@@ -933,7 +927,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         if (first_move is not None and
             (b.is_capture(first_move) or
              first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
-            b.apply(first_move)
+            b.apply(first_move, None, None, None)
             evaluation = -quiesce(b, -beta, -alpha, ply + 1)
             b.undo()
 
@@ -953,8 +947,8 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
                 alpha = evaluation
                 best_move = first_move
     
-    for move in order_moves(b, ply, captures_only = True):
-        b.apply(move)
+    for move, is_capture, is_promotion, is_castling in order_moves(b, ply, captures_only = True):
+        b.apply(move, is_capture, is_promotion, is_castling)
         evaluation = -quiesce(b, -beta, -alpha, ply + 1)
         b.undo()
 
@@ -1055,19 +1049,17 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             r = 0
 
         if r != 0 and depth > r:
-            b.apply(None)
+            b.apply(None, None, None, None)
             null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1)
             b.undo()
             if null_score >= beta:
                 return beta
         
-    for move in order_moves(b, ply):
+    for move, is_capture, is_promotion, is_castling in order_moves(b, ply):
         moves_searched += 1
-        b.apply(move)
+        b.apply(move, is_capture, is_promotion, is_castling)
         evaluation = None
 
-        is_capture = b.is_capture(move)
-        is_promotion = move.is_promotion()
         can_reduce = (
             moves_searched > 3 and
             depth >= LMR and
@@ -1207,14 +1199,25 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 if not legal_moves:
                     break
                     
-                if best_move is not None and best_move in legal_moves:
-                    legal_moves.remove(best_move)
-                    legal_moves.insert(0, best_move)
+                if best_move is not None:
+                    b_check.apply(best_move, None, None, None)
+                    evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
+                    b_check.undo()
+
+                    if evaluation > cur_best_eval:
+                        cur_best_eval = evaluation
+                        cur_best_move = best_move
+                    
+                    if cur_best_eval > current_alpha:
+                        current_alpha = cur_best_eval
+
+                    if cur_best_eval >= beta:
+                        break
 
                 clear_killer()
 
-                for move in legal_moves:
-                    b_check.apply(move)
+                for move, is_capture, is_promotion, is_castling in legal_moves:
+                    b_check.apply(move, is_capture, is_promotion, is_castling)
                     evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
                     b_check.undo()
 
@@ -1287,7 +1290,7 @@ def main() -> None:
     while not board.status(chess.CHECKMATE) and not board.status(chess.DRAW):
         if not SELF_PLAY:
             best_move = get_input(board)
-            board.apply(best_move)
+            board.apply(best_move, None, None, None)
             print(board.pretty())
         s = time.perf_counter()
         best_move, evaluation = get_best_move(board, TIME_LIMIT)
@@ -1295,7 +1298,7 @@ def main() -> None:
         print()
         if best_move == None:
             break
-        board.apply(best_move)
+        board.apply(best_move, None, None, None)
         print(board.pretty())
         print(f"Evaluation: {evaluation}")
         print(f"Nodes searched: {nodes_searched}")
