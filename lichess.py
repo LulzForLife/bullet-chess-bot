@@ -3,6 +3,11 @@ import berserk.exceptions
 import bulletchess as chess
 import main
 import time
+import os
+
+main.USE_OPENING = True
+main.USE_GAVIOTA = os.path.exists("gaviota_5")
+main.USE_UCI = False
 
 try:
     with open("lichess-api-key", 'r') as f:
@@ -85,8 +90,12 @@ while True:
                         if hasattr(my_time_sec, "total_seconds"):
                             my_time_sec = my_time_sec.total_seconds() * 1000
                         time_limit = max(0.02, min(time_limit, my_time_sec * 0.85))
+                        if time_limit > 10000:
+                            time_limit = 10
                         
                         chosen_move, evaluation = main.get_best_move(board, time_limit, 100)
+                        if chosen_move is None:
+                            chosen_move, evaluation = main.get_best_move(board, 86400, 1)
                         
                         if chosen_move:
                             client.bots.make_move(game_id, chosen_move.uci())
@@ -95,7 +104,7 @@ while True:
     except KeyboardInterrupt:
         raise
     except berserk.exceptions.ResponseError as e:
-        print(f"HTTP 429 encountered")
+        print(f"Encountered Exception: {e}")
         print("Waiting 30 seconds...")
         for t in range(30):
             print(f"{29 - t} seconds remaining...   ", end='\r')

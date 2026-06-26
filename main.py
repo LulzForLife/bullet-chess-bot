@@ -577,7 +577,7 @@ def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tupl
 
 def clean_tt(b: EvalBoard) -> None:
     global tt
-    min_date = b.fullmove_number - 1
+    min_date = b.fullmove_number - 3
 
     expired = []
 
@@ -765,23 +765,25 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
-    piece_values = PIECE_VALUES
-    history_side = history[b.turn]
-    legal_moves = b.legal_moves
-
-    is_capture = b.is_capture
-    is_castling = b.is_castling
-    board_get = b.board.__getitem__
-    not_captures_only = not captures_only
-
-    killer0, killer1 = killer_moves[ply]
-    killer0_exists = killer1_exists = False
-
     tt_entry = tt.get(b.fen)
     if tt_entry is not None:
         tt_move = tt_entry.move
     else:
         tt_move = None
+    
+    b_board = b.board
+    
+    if tt_move is not None:
+        yield (tt_move, tt_move.is_capture(b_board), tt_move.is_promotion(), tt_move.is_castling(b_board))
+    
+    piece_values = PIECE_VALUES
+    history_side = history[b.turn]
+
+    board_get = b_board.__getitem__
+    not_captures_only = not captures_only
+
+    killer0, killer1 = killer_moves[ply]
+    killer0_exists = killer1_exists = False
 
     winning: list[tuple[float, chess.Move, bool, bool, bool]] = []
     equal: list[tuple[chess.Move, bool, bool, bool]] = []
@@ -792,7 +794,7 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     if b.status(chess.CHECK):
         captures_only = False
 
-    for move in legal_moves():
+    for move in b_board.legal_moves():
         if move == tt_move:
             continue
 
@@ -802,36 +804,30 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
         if move == killer1:
             killer1_exists = True
 
-        capture = is_capture(move)
-        promo = move.is_promotion()
-        promotion = move.promotion
-        castle = is_castling(move)
+        capture = move.is_capture(b_board)
 
-        if promo:
-            if not_captures_only or promotion is chess.QUEEN:
-                winning.append((piece_values[promotion], move, capture, promo, castle)) # type: ignore
+        if move.is_promotion():
+            promo = move.promotion
+            if not_captures_only or promo is chess.QUEEN:
+                winning.append((piece_values[promo], move, capture, True, False)) # type: ignore
                 continue
         elif capture:
             victim = board_get(move.destination)
             victim_type = chess.PAWN if victim is None else victim.piece_type
 
             attacker_type = board_get(move.origin).piece_type # type: ignore
-            score = piece_values[victim_type] - piece_values[attacker_type]
+            score = piece_values[victim_type] * 10 - piece_values[attacker_type]
 
             if score > 0:
-                winning.append((score, move, capture, promo, castle))
+                winning.append((score, move, True, False, False))
             elif score == 0:
-                equal.append((move, capture, promo, castle))
+                equal.append((move, True, False, False))
             else:
-                losing.append((score, move, capture, promo, castle))
+                losing.append((score, move, True, False, False))
 
             continue
-
-        if not_captures_only:
-            quiets.append((history_side.get(move, 0), move, capture, promo, castle)) # type: ignore
-
-    if tt_move is not None:
-        yield (tt_move, is_capture(tt_move), tt_move.is_promotion(), is_castling(tt_move))
+        elif not_captures_only:
+            quiets.append((history_side.get(move, 0), move, False, False, move.is_castling(b_board))) # type: ignore
 
     winning.sort(key=lambda x: x[0], reverse=True)
     for move in winning:
@@ -843,10 +839,10 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     if not_captures_only:
 
         if killer0_exists and killer0 is not None:
-            yield (killer0, is_capture(killer0), killer0.is_promotion(), is_castling(killer0))
+            yield (killer0, killer0.is_capture(b_board), killer0.is_promotion(), killer0.is_castling(b_board))
 
         if killer1_exists and killer1 is not None:
-            yield (killer1, is_capture(killer1), killer1.is_promotion(), is_castling(killer1))
+            yield (killer1, killer1.is_capture(b_board), killer1.is_promotion(), killer1.is_castling(b_board))
 
         quiets.sort(key=lambda x: x[0], reverse=True) # type: ignore
         for move in quiets: # type: ignore
