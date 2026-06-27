@@ -34,9 +34,63 @@ def test_apply_undo(tests: int) -> None:
         if test_position.evaluation != initial_eval:
             raise ValueError("Mismatch with applying/undoing!")
 
+def test_perft(depth: int) -> None:
+    def search(b: chess.Board, depth: int) -> Generator[chess.Board]:
+        if depth <= 0:
+            for m in b.legal_moves():
+                b.apply(m)
+                yield b
+                b.undo()
+        else:
+            for m in b.legal_moves():
+                b.apply(m)
+                for pos in search(b, depth - 1):
+                    yield pos
+                yield b
+                b.undo()
+    depths = {
+        0: 20,
+        1: 420,
+        2: 9322,
+        3: 206603,
+        4: 5072212,
+        5: 124132536,
+    }
+    for d in tqdm.tqdm(range(depth)):
+        if not len(list(search(chess.Board(), d))) == depths[d]:
+            raise ValueError(f"Error at depth {d} in perft")
+
+def test_zobist_clash(depth: int) -> None:
+    def search(b: chess.Board, depth: int) -> Generator[chess.Board]:
+        if depth <= 0:
+            for m in b.legal_moves():
+                b.apply(m)
+                yield b
+                b.undo()
+        else:
+            for m in b.legal_moves():
+                b.apply(m)
+                yield b
+                for pos in search(b, depth - 1):
+                    yield pos
+                b.undo()
+    hash_fen = {}
+    for d in tqdm.tqdm(range(depth)):
+        for pos in search(chess.Board(), d):
+            pos_hash, pos_fen = pos.__hash__(), pos.fen()
+            if pos_hash in hash_fen:
+                correct_fen = hash_fen[pos_hash]
+                if correct_fen != pos_fen:
+                    print(max(hash_fen.keys()))
+                    raise ValueError(f"Hash collision between {pos_fen} and {correct_fen}")
+            else:
+                hash_fen[pos_hash] = pos_fen
+
 def main() -> None:
     test_testcases("testcases.json")
     test_apply_undo(1_000)
+    test_perft(5)
+    test_zobist_clash(5)
 
 if __name__ == "__main__":
     main()
