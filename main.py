@@ -103,12 +103,7 @@ class EvalBoard():
 
         origin_piece = self_board[move.origin]
         dest_piece = self_board[move.destination]
-        try:
-            origin_piece_type = origin_piece.piece_type # type: ignore
-        except Exception:
-            print(self.board.pretty())
-            print(move)
-            raise
+        origin_piece_type = origin_piece.piece_type # type: ignore
         if dest_piece is not None:
             dest_piece_type = dest_piece.piece_type
         else:
@@ -211,8 +206,37 @@ class EvalBoard():
 
         self.board.apply(move)
         self.update_status()
-        if is_castling or origin_piece_type is chess.KING or origin_piece_type is chess.ROOK or dest_piece_type is chess.ROOK:
-            self.update_castling_rights()
+
+        if is_castling or origin_piece_type is chess.KING:
+            if self_turn is chess.WHITE:
+                self.ks_w = False
+                self.qs_w = False
+            else:
+                self.ks_b = False
+                self.qs_b = False
+        elif origin_piece_type is chess.ROOK:
+            if self_turn is chess.WHITE:
+                if origin_idx == 0:
+                    self.qs_w = False
+                else:
+                    self.ks_w = False
+            else:
+                if origin_idx == 56:
+                    self.qs_b = False
+                else:
+                    self.ks_b = False
+        elif dest_piece_type is chess.ROOK and is_capture:
+            if self_turn is chess.WHITE:
+                if dest_idx == 56:
+                    self.qs_b = False
+                else:
+                    self.ks_b = False
+            else:
+                if dest_idx == 0:
+                    self.qs_w = False
+                else:
+                    self.ks_w = False
+        
         self.fen = self.board.fen()
 
         new_castle_self = self.castling_rights_any(self_turn)

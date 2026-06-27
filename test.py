@@ -81,7 +81,6 @@ def test_zobist_clash(depth: int) -> None:
             if pos_hash in hash_fen:
                 correct_fen = hash_fen[pos_hash]
                 if correct_fen != pos_fen:
-                    print(max(hash_fen.keys()))
                     raise ValueError(f"Hash collision between {pos_fen} and {correct_fen}")
             else:
                 hash_fen[pos_hash] = pos_fen
