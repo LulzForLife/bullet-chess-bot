@@ -267,9 +267,14 @@ class EvalBoard():
         return move
     
     def update_status(self) -> None:
-        self.in_check = self.board in chess.CHECK
-        self.in_checkmate = self.board in chess.CHECKMATE
-        self.in_draw = self.board in chess.DRAW
+        in_check = self.board in chess.CHECK
+        in_checkmate = False
+        self.in_check = in_check
+        if in_check:
+            in_checkmate = self.board in chess.CHECKMATE
+            self.in_checkmate = in_checkmate
+        if not in_checkmate:
+            self.in_draw = self.board in chess.DRAW
     
     def update_castling_rights(self) -> None:
         self.ks_w = self.board.castling_rights.kingside(chess.WHITE)
@@ -1012,6 +1017,9 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
 
     nodes_searched += 1
 
+    if depth <= 0:
+        return quiesce(b, alpha, beta, ply)
+
     if b.status(chess.CHECKMATE):
         return -100000.0 + ply
     elif b.status(chess.DRAW):
@@ -1031,9 +1039,6 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                     return -100000.0 + ply + dtm
     
     in_check = b.status(chess.CHECK)
-    
-    if depth <= 0:
-        return quiesce(b, alpha, beta, ply)
     
     b_fen = b.fen
     entry = tt.get(b_fen)
