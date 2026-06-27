@@ -512,7 +512,7 @@ QS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS[chess.
 QS_EG = ENDGAME_BONUS[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS[chess.ROOK][chess.A8.index()]
 
 TIME_LIMIT = 10
-MAX_PLY = 64
+MAX_PLY = 99
 MINIMUM_MOVE_TIME = min(0.2, TIME_LIMIT)
 MAX_PREFILL_TIME = max(0.5, MINIMUM_MOVE_TIME)
 END = 0
@@ -794,6 +794,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
+    global MAX_PLY
     tt_entry = tt.get(b.fen)
     if tt_entry is not None:
         tt_move = tt_entry.move
@@ -811,7 +812,10 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     board_get = b_board.__getitem__
     not_captures_only = not captures_only
 
-    killer0, killer1 = killer_moves[ply]
+    if ply < MAX_PLY:
+        killer0, killer1 = killer_moves[ply]
+    else:
+        killer0 = killer1 = None
     killer0_exists = killer1_exists = False
 
     winning: list[tuple[float, chess.Move, bool, bool, bool]] = []
@@ -1010,7 +1014,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     return alpha
 
 def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0) -> float:
-    global tt, nodes_searched, killer_moves, LMR, CHECK_EXTENSION, END, USE_QUIESCE
+    global tt, nodes_searched, LMR, CHECK_EXTENSION, END, USE_QUIESCE
     
     if time.perf_counter() >= END:
         raise TimeoutError
@@ -1136,12 +1140,19 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
         tt_flag = Flag.EXACT
     else:
         tt_flag = Flag.UPPER
+    
+    existing = tt.get(b_fen)
 
-    store_tt(b, b_fen, best_move, depth, tt_score, tt_flag)
+    move_to_store = best_move
+    if move_to_store is None and existing is not None:
+        move_to_store = existing.move
+
+    store_tt(b, b_fen, move_to_store, depth, tt_score, tt_flag)
+    
     return alpha
 
 def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY, *, print_info: bool = True) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, killer_moves, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
+    global nodes_searched, USE_UCI, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
     
     nodes_searched = 0
     start_time = time.perf_counter()
@@ -1220,28 +1231,9 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 cur_best_eval = -150000.0
                 current_alpha = alpha
 
-                legal_moves = order_moves(b, 0)
-                if not legal_moves:
-                    break
-                    
-                if best_move is not None:
-                    b_check.apply(best_move, None, None, None)
-                    evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
-                    b_check.undo()
-
-                    if evaluation > cur_best_eval:
-                        cur_best_eval = evaluation
-                        cur_best_move = best_move
-                    
-                    if cur_best_eval > current_alpha:
-                        current_alpha = cur_best_eval
-
-                    if cur_best_eval >= beta:
-                        break
-
                 clear_killer()
 
-                for move, is_capture, is_promotion, is_castling in legal_moves:
+                for move, is_capture, is_promotion, is_castling in order_moves(b, 0):
                     b_check.apply(move, is_capture, is_promotion, is_castling)
                     evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
                     b_check.undo()
