@@ -75,12 +75,6 @@ class EvalBoard():
             return self.ks_b or self.ks_w
         raise ValueError
     
-    def is_capture(self, move: chess.Move) -> bool:
-        return move.is_capture(self.board)
-    
-    def is_castling(self, move: chess.Move) -> bool:
-        return move.is_castling(self.board)
-    
     def legal_moves(self) -> list[chess.Move]:
         return self.board.legal_moves()
     
@@ -104,24 +98,30 @@ class EvalBoard():
         
         self_board = self.board
 
-        origin_piece = self_board[move.origin]
-        dest_piece = self_board[move.destination]
+        origin = move.origin
+        destination = move.destination
+        origin_piece = self_board[origin]
+        dest_piece = self_board[destination]
         origin_piece_type = origin_piece.piece_type # type: ignore
         if dest_piece is not None:
             dest_piece_type = dest_piece.piece_type
         else:
             dest_piece_type = None
         
-        origin_idx = move.origin.index()
-        dest_idx = move.destination.index()
+        origin_idx = origin.index()
+        dest_idx = destination.index()
         origin_idx_mir = MIRROR_BOARD[origin_idx]
         dest_idx_mir = MIRROR_BOARD[dest_idx]
 
-        self_turn = self.turn
+        self_turn = self.board.turn
         opp_turn = self_turn.opposite
 
         ep_square = self_board.en_passant_square
-        is_en_passant = ep_square == move.destination and origin_piece is chess.PAWN # type: ignore
+        if ep_square:
+            ep_idx = ep_square.index()
+        else:
+            ep_idx = None
+        is_en_passant = ep_square == destination and origin_piece is chess.PAWN # type: ignore
 
         if is_capture is None:
             is_capture = move.is_capture(self_board)
@@ -205,7 +205,7 @@ class EvalBoard():
             dSeg += eg_piece_value
 
             passant_index = TYPE_TO_INT[chess.PAWN] * 2 + enemy_pivot
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * passant_index + ep_square.index()] # type: ignore
+            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * passant_index + ep_idx] # type: ignore
         
         if is_castling:
             if self_turn is chess.WHITE:
@@ -309,34 +309,22 @@ class EvalBoard():
             dSeg -= CASTLE_RIGHTS_BONUS
 
         if ep_square:
+            file = ep_idx & 7 # type: ignore
             if self_turn is chess.WHITE:
-                ep_mask = ep_square.south(1)
+                ep_mask = WHITE_EP_MASK[file]
             else:
-                ep_mask = ep_square.north(1)
-            file = ep_square.index() & 7
-            if file == 0:
-                ep_mask = ep_mask.west(1).bb() # type: ignore
-            elif file == 7:
-                ep_mask = ep_mask.east(1).bb() # type: ignore
-            else:
-                ep_mask = ep_mask.east(1).bb() | ep_mask.west(1).bb() # type: ignore
+                ep_mask = BLACK_EP_MASK[file]
 
             if ep_mask & self_board[(self_turn, chess.PAWN)]:
                 self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[772 + file]
         
         new_ep = self_board.en_passant_square
         if new_ep:
+            file = dest_idx & 7
             if opp_turn is chess.WHITE:
-                new_mask = new_ep.south(1)
+                new_mask = WHITE_EP_MASK[file]
             else:
-                new_mask = new_ep.north(1)
-            file = new_ep.index() & 7
-            if file == 0:
-                new_mask = new_mask.west(1).bb() # type: ignore
-            elif file == 7:
-                new_mask = new_mask.east(1).bb() # type: ignore
-            else:
-                new_mask = new_mask.east(1).bb() | new_mask.west(1).bb() # type: ignore
+                new_mask = BLACK_EP_MASK[file]
 
             if new_mask & self_board[(opp_turn, chess.PAWN)]:
                 self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[772 + file]
@@ -598,12 +586,6 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
-# todo:
-# replace north/south/east/west calls with maths
-# precompute ep squares to check
-# cache things like self_board.__getitem__ and POLYGLOT.__getitem__
-# improve apply() speed etc
-
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
@@ -613,6 +595,8 @@ KS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.F8.index()] - MIDDLEGAME_BONUS[chess.
 KS_EG = ENDGAME_BONUS[chess.ROOK][chess.F8.index()] - ENDGAME_BONUS[chess.ROOK][chess.H8.index()]
 QS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS[chess.ROOK][chess.A8.index()]
 QS_EG = ENDGAME_BONUS[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS[chess.ROOK][chess.A8.index()]
+BLACK_EP_MASK: list[chess.Bitboard] = []
+WHITE_EP_MASK: list[chess.Bitboard] = []
 
 TIME_LIMIT = 10
 MAX_PLY = 99
@@ -647,6 +631,25 @@ if os.path.exists("gaviota_5"):
 else:
     USE_GAVIOTA = False
 opening_book = polyglot.open_reader("komodo.bin")
+
+for pivot, rank in ((0, chess.RANK_6), (1, chess.RANK_3)):
+    for n, square in enumerate(rank):
+        if pivot == 1:
+            ep_mask = square.north(1)
+        else:
+            ep_mask = square.south(1)
+
+        if n == 0:
+            ep_mask = ep_mask.west(1).bb() # type: ignore
+        elif n == 7:
+            ep_mask = ep_mask.east(1).bb() # type: ignore
+        else:
+            ep_mask = ep_mask.west(1).bb() | ep_mask.east(1).bb() # type: ignore
+        
+        if pivot == 1:
+            BLACK_EP_MASK.append(ep_mask)
+        else:
+            WHITE_EP_MASK.append(ep_mask)
 
 def get_input(b: EvalBoard) -> chess.Move:
     move = None
@@ -879,7 +882,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     nb = b.copy()
     pv: list[str] = [move.uci()]
     nb.apply(move, None, None, None)
-    b_hash = hash(nb)
+    b_hash = nb.zobrist_hash
     while True:
         if nb.piece_count <= 5 and USE_GAVIOTA:
             bestmove = get_best_tablebase_move(nb)[0]
@@ -893,12 +896,12 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
             break
         pv.append(bestmove.uci()) # type: ignore
         nb.apply(bestmove, None, None, None)
-        b_hash = hash(nb)
+        b_hash = nb.zobrist_hash
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
     global MAX_PLY
-    tt_entry = tt.get(hash(b))
+    tt_entry = tt.get(b.zobrist_hash)
     if tt_entry is not None:
         tt_move = tt_entry.move
     else:
@@ -1031,7 +1034,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
             if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
                 return alpha
     
-    b_hash = hash(b)
+    b_hash = b.zobrist_hash
     entry = tt.get(b_hash)
     in_tt = entry is not None
     original_alpha = alpha
@@ -1057,7 +1060,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         first_move = entry.move # type: ignore
         
         if (first_move is not None and
-            (b.is_capture(first_move) or
+            (first_move.is_capture(b.board) or
              first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
             b.apply(first_move, None, None, None)
             evaluation = -quiesce(b, -beta, -alpha, ply + 1)
@@ -1147,7 +1150,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     
     in_check = b.status(chess.CHECK)
     
-    b_hash = hash(b)
+    b_hash = b.zobrist_hash
     entry = tt.get(b_hash)
     in_tt = entry is not None
     original_alpha = alpha
