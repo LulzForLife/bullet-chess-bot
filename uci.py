@@ -154,7 +154,7 @@ def get_time(tokens, board) -> tuple[float, int]:
 
 def parse_go(board: main.EvalBoard, tokens: list[str], is_ponder: bool = False) -> None:
     def run_and_print(board: main.EvalBoard, time_limit: float, max_depth: int) -> None:
-        if board.in_draw or board.in_checkmate:
+        if board.board in chess.CHECKMATE or board.board in chess.DRAW:
             raise ValueError
         best_move, _ = main.get_best_move(board, time_limit, max_depth)
         if best_move is None:
@@ -165,7 +165,7 @@ def parse_go(board: main.EvalBoard, tokens: list[str], is_ponder: bool = False) 
             ponder_move = main.get_pv(board, best_move)[1]
             board.apply(best_move, None, None, None)
             board.apply(chess.Move.from_uci(ponder_move), None, None, None)
-            if board.in_checkmate or board.in_draw:
+            if board.board in chess.CHECKMATE or board.board in chess.DRAW:
                 raise IndexError
             board.undo()
             board.undo()
