@@ -61,35 +61,47 @@ def test_perft(depth: int) -> None:
             raise ValueError(f"Error at depth {d} in perft")
 
 def test_zobist_clash(depth: int) -> None:
-    def search(b: chess.Board, depth: int) -> Generator[chess.Board]:
+    def search(b: EvalBoard, depth: int) -> Generator[EvalBoard]:
         if depth <= 0:
             for m in b.legal_moves():
-                b.apply(m)
+                b.apply(m, None, None, None)
                 yield b
                 b.undo()
         else:
             for m in b.legal_moves():
-                b.apply(m)
+                b.apply(m, None, None, None)
                 yield b
                 for pos in search(b, depth - 1):
                     yield pos
                 b.undo()
     hash_fen = {}
     for d in tqdm.tqdm(range(depth)):
-        for pos in search(chess.Board(), d):
-            pos_hash, pos_fen = pos.__hash__(), pos.fen()
+        for pos in search(EvalBoard(), d):
+            pos_hash, pos_fen = pos.__hash__(), pos.fen().split()[0]
             if pos_hash in hash_fen:
-                correct_fen = hash_fen[pos_hash]
+                correct_fen = hash_fen[pos_hash].split()[0]
                 if correct_fen != pos_fen:
                     raise ValueError(f"Hash collision between {pos_fen} and {correct_fen}")
             else:
                 hash_fen[pos_hash] = pos_fen
 
+def test_board_speed(iters: int) -> None:
+    board = EvalBoard()
+    move = chess.Move.from_uci("e2e4")
+    s = time.perf_counter()
+    board.apply(move, None, None, None)
+    for _ in tqdm.tqdm(range(iters)):
+        board.apply(board.undo(), None, None, None)
+    board.undo()
+    e = time.perf_counter()
+    print(f"Average time: {(e - s) / iters}")
+
 def main() -> None:
     test_testcases("testcases.json")
     test_apply_undo(1_000)
     test_perft(5)
-    test_zobist_clash(5)
+    test_zobist_clash(4)
+    test_board_speed(1_000_000)
 
 if __name__ == "__main__":
     main()

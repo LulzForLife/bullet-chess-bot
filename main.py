@@ -86,7 +86,8 @@ class EvalBoard():
              self.zobrist_hash)
         )
 
-        self_zobrist_hash = self.zobrist_hash ^ POLYGLOT_RANDOM_ARRAY[780]
+        poly = POLYGLOT_RANDOM_ARRAY
+        self_zobrist_hash = self.zobrist_hash ^ poly[780]
 
         if move is None:
             self.board.apply(move)
@@ -114,7 +115,7 @@ class EvalBoard():
         dest_idx_mir = MIRROR_BOARD[dest_idx]
 
         self_turn = self.board.turn
-        opp_turn = self_turn.opposite
+        self_turn_is_white = self_turn is chess.WHITE
 
         ep_square = self_board.en_passant_square
         if ep_square:
@@ -129,86 +130,106 @@ class EvalBoard():
             is_promo = move.is_promotion()
         if is_castling is None:
             is_castling = move.is_castling(self.board)
+        
+        piece_values = PIECE_VALUES
+        mg_bonus = MIDDLEGAME_BONUS
+        eg_bonus = ENDGAME_BONUS
+        type_to_int = TYPE_TO_INT
+        phase = PHASE_VALUES
 
         dSmg = dSeg = 0.0
         
         if self_turn is chess.WHITE:
-            psqt_old_mg = MIDDLEGAME_BONUS[origin_piece_type][origin_idx_mir]
-            psqt_new_mg = MIDDLEGAME_BONUS[origin_piece_type][dest_idx_mir]
-            psqt_old_eg = ENDGAME_BONUS[origin_piece_type][origin_idx_mir]
-            psqt_new_eg = ENDGAME_BONUS[origin_piece_type][dest_idx_mir]
+            psqt_old_mg = mg_bonus[origin_piece_type][origin_idx_mir]
+            psqt_new_mg = mg_bonus[origin_piece_type][dest_idx_mir]
+            psqt_old_eg = eg_bonus[origin_piece_type][origin_idx_mir]
+            psqt_new_eg = eg_bonus[origin_piece_type][dest_idx_mir]
         else:
-            psqt_old_mg = MIDDLEGAME_BONUS[origin_piece_type][origin_idx]
-            psqt_new_mg = MIDDLEGAME_BONUS[origin_piece_type][dest_idx]
-            psqt_old_eg = ENDGAME_BONUS[origin_piece_type][origin_idx]
-            psqt_new_eg = ENDGAME_BONUS[origin_piece_type][dest_idx]
+            psqt_old_mg = mg_bonus[origin_piece_type][origin_idx]
+            psqt_new_mg = mg_bonus[origin_piece_type][dest_idx]
+            psqt_old_eg = eg_bonus[origin_piece_type][origin_idx]
+            psqt_new_eg = eg_bonus[origin_piece_type][dest_idx]
 
         dSmg += (psqt_new_mg - psqt_old_mg)
         dSeg += (psqt_new_eg - psqt_old_eg)
 
-        pivot = int(self_turn is chess.WHITE)
+        pivot = int(self_turn_is_white)
         enemy_pivot = 1 - pivot
-        piece_index = TYPE_TO_INT[origin_piece_type] * 2 + pivot
+        piece_index = type_to_int[origin_piece_type] * 2 + pivot
 
-        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * piece_index + origin_idx]
+        self_zobrist_hash ^= poly[64 * piece_index + origin_idx]
         if not is_promo:
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * piece_index + dest_idx]
+            self_zobrist_hash ^= poly[64 * piece_index + dest_idx]
 
         if is_capture:
             self.piece_count -= 1
-
-            mg_piece_value = eg_piece_value = PIECE_VALUES[dest_piece_type] # type: ignore
-
-            if self_turn is chess.WHITE:
-                mg_piece_value += MIDDLEGAME_BONUS[dest_piece_type][dest_idx] # type: ignore
-                eg_piece_value += ENDGAME_BONUS[dest_piece_type][dest_idx] # type: ignore
+            if self_turn_is_white:
+                self.black_phase -= phase[dest_piece_type] # type: ignore
             else:
-                mg_piece_value += MIDDLEGAME_BONUS[dest_piece_type][dest_idx_mir] # type: ignore
-                eg_piece_value += ENDGAME_BONUS[dest_piece_type][dest_idx_mir] # type: ignore
+                self.white_phase -= phase[origin_piece_type]
+
+            mg_piece_value = eg_piece_value = piece_values[dest_piece_type] # type: ignore
+
+            if self_turn_is_white:
+                mg_piece_value += mg_bonus[dest_piece_type][dest_idx] # type: ignore
+                eg_piece_value += eg_bonus[dest_piece_type][dest_idx] # type: ignore
+            else:
+                mg_piece_value += mg_bonus[dest_piece_type][dest_idx_mir] # type: ignore
+                eg_piece_value += eg_bonus[dest_piece_type][dest_idx_mir] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
-            captured_index = TYPE_TO_INT[dest_piece_type] * 2 + enemy_pivot # type: ignore
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * captured_index + dest_idx]
+            captured_index = type_to_int[dest_piece_type] * 2 + enemy_pivot # type: ignore
+            self_zobrist_hash ^= poly[64 * captured_index + dest_idx]
 
         if is_promo:
             piece_type = move.promotion
-            mg_piece_value = eg_piece_value = PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN] # type: ignore
-            
-            if self_turn is chess.WHITE:
-                mg_piece_value += MIDDLEGAME_BONUS[piece_type][dest_idx] # type: ignore
-                eg_piece_value += ENDGAME_BONUS[piece_type][dest_idx] # type: ignore
+
+            if self_turn_is_white:
+                self.white_phase += phase[piece_type] - phase[chess.PAWN] # type: ignore
             else:
-                mg_piece_value += MIDDLEGAME_BONUS[piece_type][dest_idx_mir] # type: ignore
-                eg_piece_value += ENDGAME_BONUS[piece_type][dest_idx_mir] # type: ignore
+                self.black_phase += phase[piece_type] - phase[chess.PAWN] # type: ignore
+
+            mg_piece_value = eg_piece_value = piece_values[move.promotion] - piece_values[chess.PAWN] # type: ignore
+            
+            if self_turn_is_white:
+                mg_piece_value += mg_bonus[piece_type][dest_idx] # type: ignore
+                eg_piece_value += eg_bonus[piece_type][dest_idx] # type: ignore
+            else:
+                mg_piece_value += mg_bonus[piece_type][dest_idx_mir] # type: ignore
+                eg_piece_value += eg_bonus[piece_type][dest_idx_mir] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
-            promo_index = TYPE_TO_INT[piece_type] * 2 + pivot # type: ignore
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * promo_index + dest_idx]
+            promo_index = type_to_int[piece_type] * 2 + pivot # type: ignore
+            self_zobrist_hash ^= poly[64 * promo_index + dest_idx]
 
         if is_en_passant:
             self.piece_count -= 1
-
-            mg_piece_value = eg_piece_value = PIECE_VALUES[chess.PAWN]
-
-            if self_turn is chess.WHITE:
-                mg_piece_value += MIDDLEGAME_BONUS[chess.PAWN][dest_idx - 8]
-                eg_piece_value += ENDGAME_BONUS[chess.PAWN][dest_idx - 8]
+            if self_turn_is_white:
+                self.black_phase -= phase[chess.PAWN]
             else:
-                mg_piece_value += MIDDLEGAME_BONUS[chess.PAWN][dest_idx_mir - 8]
-                eg_piece_value += ENDGAME_BONUS[chess.PAWN][dest_idx_mir - 8]
+                self.white_phase -= phase[chess.PAWN]
+
+            mg_piece_value = eg_piece_value = piece_values[chess.PAWN]
+
+            if self_turn_is_white:
+                mg_piece_value += mg_bonus[chess.PAWN][dest_idx - 8]
+                eg_piece_value += eg_bonus[chess.PAWN][dest_idx - 8]
+            else:
+                mg_piece_value += mg_bonus[chess.PAWN][dest_idx_mir - 8]
+                eg_piece_value += eg_bonus[chess.PAWN][dest_idx_mir - 8]
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
 
-            passant_index = TYPE_TO_INT[chess.PAWN] * 2 + enemy_pivot
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * passant_index + ep_idx] # type: ignore
+            passant_index = type_to_int[chess.PAWN] * 2 + enemy_pivot
+            self_zobrist_hash ^= poly[64 * passant_index + ep_idx] # type: ignore
         
         if is_castling:
-            if self_turn is chess.WHITE:
+            if self_turn_is_white:
                 if dest_idx == 6:
                     dSmg += KS_MG
                     dSeg += KS_EG
@@ -230,76 +251,85 @@ class EvalBoard():
                     dSeg += QS_EG
                     castle_origin_idx = 56
                     castle_dest_idx = 59
-            castle_idx = TYPE_TO_INT[chess.ROOK] * 2 + pivot
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * castle_idx + castle_origin_idx]
-            self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[64 * castle_idx + castle_dest_idx]
-
-        old_castle_self = self.castling_rights_any(self_turn)
-        old_castle_opp = self.castling_rights_any(opp_turn)
-
-        self.board.apply(move)
-        self.update_status()
+            castle_idx = type_to_int[chess.ROOK] * 2 + pivot
+            self_zobrist_hash ^= poly[64 * castle_idx + castle_origin_idx]
+            self_zobrist_hash ^= poly[64 * castle_idx + castle_dest_idx]
 
         self_ks_w = self.ks_w
         self_qs_w = self.qs_w
         self_ks_b = self.ks_b
         self_qs_b = self.qs_b
+
+        if self_turn_is_white:
+            old_castle_self = self_ks_w or self_qs_w
+            old_castle_opp = self_ks_b or self_qs_b
+        else:
+            old_castle_self = self_ks_w or self_qs_w
+            old_castle_opp = self_ks_b or self_qs_b
+
+        self.board.apply(move)
+        self.update_status()
+
         if is_castling or origin_piece_type is chess.KING:
-            if self_turn is chess.WHITE:
+            if self_turn_is_white:
                 if self_ks_w:
                     self.ks_w = False
-                    self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768]
+                    self_zobrist_hash ^= poly[768]
                 if self_qs_w:
                     self.qs_w = False
-                    self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 1]
+                    self_zobrist_hash ^= poly[768 + 1]
             else:
                 if self_ks_b:
                     self.ks_b = False
-                    self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 2]
+                    self_zobrist_hash ^= poly[768 + 2]
                 if self_qs_b:
                     self.qs_b = False
-                    self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 3]
+                    self_zobrist_hash ^= poly[768 + 3]
         elif origin_piece_type is chess.ROOK:
-            if self_turn is chess.WHITE:
+            if self_turn_is_white:
                 if origin_idx == 0:
                     if self_qs_w:
                         self.qs_w = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 1]
+                        self_zobrist_hash ^= poly[768 + 1]
                 else:
                     if self_ks_w:
                         self.ks_w = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768]
+                        self_zobrist_hash ^= poly[768]
             else:
                 if origin_idx == 56:
                     if self_qs_b:
                         self.qs_b = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 3]
+                        self_zobrist_hash ^= poly[768 + 3]
                 else:
                     if self_ks_b:
                         self.ks_b = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 2]
+                        self_zobrist_hash ^= poly[768 + 2]
         elif dest_piece_type is chess.ROOK and is_capture:
-            if self_turn is chess.WHITE:
+            if self_turn_is_white:
                 if dest_idx == 56:
                     if self_qs_b:
                         self.qs_b = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 3]
+                        self_zobrist_hash ^= poly[768 + 3]
                 else:
                     if self_ks_b:
                         self.ks_b = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 2]
+                        self_zobrist_hash ^= poly[768 + 2]
             else:
                 if dest_idx == 0:
                     if self_qs_w:
                         self.qs_w = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768 + 1]
+                        self_zobrist_hash ^= poly[768 + 1]
                 else:
                     if self_ks_w:
                         self.ks_w = False
-                        self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[768]
+                        self_zobrist_hash ^= poly[768]
 
-        new_castle_self = self.castling_rights_any(self_turn)
-        new_castle_opp = self.castling_rights_any(opp_turn)
+        if self_turn_is_white:
+            new_castle_self = self.ks_w or self.qs_w
+            new_castle_opp = self.ks_b or self.qs_b
+        else:
+            new_castle_self = self.ks_w or self.qs_w
+            new_castle_opp = self.ks_b or self.qs_b
 
         if old_castle_self and not new_castle_self:
             dSmg += CASTLE_RIGHTS_BONUS
@@ -310,24 +340,24 @@ class EvalBoard():
 
         if ep_square:
             file = ep_idx & 7 # type: ignore
-            if self_turn is chess.WHITE:
+            if self_turn_is_white:
                 ep_mask = WHITE_EP_MASK[file]
             else:
                 ep_mask = BLACK_EP_MASK[file]
 
             if ep_mask & self_board[(self_turn, chess.PAWN)]:
-                self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[772 + file]
+                self_zobrist_hash ^= poly[772 + file]
         
         new_ep = self_board.en_passant_square
         if new_ep:
             file = dest_idx & 7
-            if opp_turn is chess.WHITE:
+            if not self_turn_is_white:
                 new_mask = WHITE_EP_MASK[file]
             else:
                 new_mask = BLACK_EP_MASK[file]
 
-            if new_mask & self_board[(opp_turn, chess.PAWN)]:
-                self_zobrist_hash ^= POLYGLOT_RANDOM_ARRAY[772 + file]
+            if new_mask & self_board[(self_turn.opposite, chess.PAWN)]:
+                self_zobrist_hash ^= poly[772 + file]
 
         self.mg_evaluation = -self.mg_evaluation - dSmg
         self.eg_evaluation = -self.eg_evaluation - dSeg
