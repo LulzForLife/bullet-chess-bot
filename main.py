@@ -914,6 +914,9 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     if tt_move is not None:
         yield (tt_move, tt_move.is_capture(b_board), tt_move.is_promotion(), tt_move.is_castling(b_board))
     
+    if b.in_check:
+        captures_only = False
+
     piece_values = PIECE_VALUES
     history_side = history[b.turn]
 
@@ -931,9 +934,6 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     losing: list[tuple[float, chess.Move, bool, bool, bool]] = []
     if not_captures_only:
         quiets: list[tuple[float, chess.Move, bool, bool, bool]] = []
-
-    if b.in_check:
-        captures_only = False
 
     moves_searched = 0
     for move in b_board.legal_moves():
@@ -1020,20 +1020,23 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         raise TimeoutError
     
     nodes_searched += 1
-    
-    stand_pat = b.evaluation
-    if stand_pat >= beta:
-        return beta
-    if stand_pat > alpha:
-        alpha = stand_pat
 
-    if stand_pat + DELTA < alpha and not b.in_check:
-        if b.turn is chess.WHITE:
-            if not (b[(chess.WHITE, chess.PAWN)] & chess.RANK_7):
-                return alpha
-        else:
-            if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
-                return alpha
+    in_check = b.in_check
+    
+    if not in_check:
+        stand_pat = b.evaluation
+        if stand_pat >= beta:
+            return beta
+        if stand_pat > alpha:
+            alpha = stand_pat
+
+        if stand_pat + DELTA < alpha and not b.in_check:
+            if b.turn is chess.WHITE:
+                if not (b[(chess.WHITE, chess.PAWN)] & chess.RANK_7):
+                    return alpha
+            else:
+                if not (b[(chess.BLACK, chess.PAWN)] & chess.RANK_2):
+                    return alpha
     
     b_hash = b.zobrist_hash
     entry = tt.get(b_hash)
@@ -1059,7 +1062,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     
     for move, is_capture, is_promotion, is_castling in order_moves(b, ply, captures_only = True):
         if move is None:
-            if b.in_check:
+            if in_check:
                 return -100000.0 + ply
             return 0.0
         b.apply(move, is_capture, is_promotion, is_castling)
@@ -1098,7 +1101,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
 
     return alpha
 
-def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0) -> float:
+def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0, is_singular: bool = False, excluded_move: chess.Move | None = None) -> float:
     global tt, nodes_searched, LMR, CHECK_EXTENSION, END, USE_QUIESCE
     
     if time.perf_counter() >= END:
@@ -1147,8 +1150,27 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             return beta
         elif flag == Flag.UPPER and evaluation <= alpha:
             return alpha
+    
+    extension = 0
+    
+    if (
+        not is_singular
+        and depth >= 6 
+        and entry is not None 
+        and abs(entry.score) < 90000.0
+        and (entry.flag is Flag.EXACT or entry.flag is Flag.LOWER)
+    ):
+        margin = 2 * depth  
+        singular_beta = entry.score - margin
+        
+        singular_depth = (depth - 3) // 2
 
-    if not in_check:
+        score = search_moves(b, singular_depth, singular_beta - 1, singular_beta, ply, True, entry.move)
+        
+        if score < singular_beta:
+            extension = 1
+
+    if not in_check and extension == 0:
         player_phase = min(b.white_phase, b.black_phase)
         if player_phase >= 8:
             r = 3
@@ -1159,12 +1181,14 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
 
         if r != 0 and depth > r:
             b.apply(None, None, None, None)
-            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1)
+            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1, False)
             b.undo()
             if null_score >= beta:
                 return beta
         
     for move, is_capture, is_promotion, is_castling in order_moves(b, ply):
+        if move == excluded_move:
+            continue
         if move is None:
             if b.in_check:
                 return -100000.0 + ply
@@ -1174,6 +1198,8 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
         evaluation = None
 
         can_reduce = (
+            extension == 0 and
+            not is_singular and
             moves_searched > 3 and
             depth >= LMR and
             not is_capture and
@@ -1183,16 +1209,16 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
 
         if can_reduce:
             reduced_depth = max(1, depth - LMR)
-            evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, ply + 1)
+            evaluation = -search_moves(b, reduced_depth, -alpha - 1, -alpha, ply + 1, False)
             if evaluation > alpha:
-                evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
+                evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1, False)
         else:
             if moves_searched == 1:
-                evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
+                evaluation = -search_moves(b, depth - 1 + extension, -beta, -alpha, ply + 1, is_singular)
             else:
-                evaluation = -search_moves(b, depth - 1, -alpha - 1, -alpha, ply + 1)
+                evaluation = -search_moves(b, depth - 1 + extension, -alpha - 1, -alpha, ply + 1, is_singular)
                 if evaluation > alpha and evaluation < beta:
-                    evaluation = -search_moves(b, depth - 1, -beta, -alpha, ply + 1)
+                    evaluation = -search_moves(b, depth - 1 + extension, -beta, -alpha, ply + 1, is_singular)
         
         b.undo()
 
