@@ -28,7 +28,7 @@ class TTEntry:
     age: int
 
 class EvalBoard():
-    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "in_checkmate", "in_draw", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
+    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
 
     def __init__(self) -> None:
         self.board = chess.Board()
@@ -38,8 +38,6 @@ class EvalBoard():
         self.black_phase = get_phase_value(self.board, chess.BLACK)
 
         self.in_check = self.board in chess.CHECK
-        self.in_checkmate = self.board in chess.CHECKMATE
-        self.in_draw = self.board in chess.DRAW
 
         self.ks_w: bool = self.board.castling_rights.kingside(chess.WHITE)
         self.qs_w: bool = self.board.castling_rights.queenside(chess.WHITE)
@@ -59,15 +57,6 @@ class EvalBoard():
     def __hash__(self) -> int:
         return self.zobrist_hash
     
-    def status(self, status: chess.BoardStatus) -> bool:
-        if status is chess.CHECK:
-            return self.in_check
-        elif status is chess.CHECKMATE:
-            return self.in_checkmate
-        elif status is chess.DRAW:
-            return self.in_draw
-        raise NotImplementedError
-    
     def castling_rights_any(self, turn: chess.Color) -> bool:
         if turn is chess.WHITE:
             return self.ks_w or self.qs_w
@@ -81,9 +70,8 @@ class EvalBoard():
     def apply(self, move: chess.Move | None, is_capture: bool | None, is_promo: bool | None, is_castling: bool | None) -> None:
         self.state_stack.append(
             (self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
-             self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
-             self.qs_w, self.ks_b, self.qs_b, self.piece_count,
-             self.zobrist_hash)
+             self.in_check, self.ks_w, self.qs_w, self.ks_b,
+             self.qs_b, self.piece_count, self.zobrist_hash)
         )
 
         poly = POLYGLOT_RANDOM_ARRAY
@@ -371,22 +359,14 @@ class EvalBoard():
 
         (
             self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
-            self.in_check, self.in_checkmate, self.in_draw, self.ks_w,
-            self.qs_w, self.ks_b, self.qs_b, self.piece_count,
-            self.zobrist_hash
+            self.in_check, self.ks_w, self.qs_w, self.ks_b,
+            self.qs_b, self.piece_count, self.zobrist_hash
         ) = self.state_stack.pop()
             
         return move
     
     def update_status(self) -> None:
-        in_check = self.board in chess.CHECK
-        in_checkmate = False
-        self.in_check = in_check
-        if in_check:
-            in_checkmate = self.board in chess.CHECKMATE
-            self.in_checkmate = in_checkmate
-        if not in_checkmate:
-            self.in_draw = self.board in chess.DRAW
+        self.in_check = chess.CHECK.__contains__(self.board)
     
     def update_castling_rights(self) -> None:
         self.ks_w = self.board.castling_rights.kingside(chess.WHITE)
@@ -421,7 +401,7 @@ class EvalBoard():
         n.white_phase = self.white_phase
         n.black_phase = self.black_phase
         n.state_stack = self.state_stack.copy()
-        n.in_check, n.in_checkmate, n.in_draw = self.in_check, self.in_checkmate, self.in_draw
+        n.in_check = self.in_check
         n.ks_w, n.qs_w, n.ks_b, n.qs_b = self.ks_w, self.qs_w, self.ks_b, self.qs_b
         n.piece_count = self.piece_count
         n.zobrist_hash = self.zobrist_hash
@@ -445,16 +425,12 @@ class EvalBoard():
     def history(self) -> list[chess.Move]:
         return self.board.history
     
-    @property
     def is_game_over(self) -> bool:
-        return self.in_checkmate or self.in_draw
+        self_board = self.board
+        return chess.CHECKMATE.__contains__(self_board) or chess.DRAW.__contains__(self_board)
     
     @property
     def evaluation(self) -> float:
-        if self.in_checkmate:
-            return -100000.0
-        elif self.in_draw:
-            return 0.0
         phase = min(24, self.white_phase + self.black_phase)
         mg_pct = phase / 24
         eg_pct = (24 - phase) / 24
@@ -637,7 +613,7 @@ END = 0
 USE_UCI = "--uci" in sys.argv
 CHECK_EXTENSION = False
 SELF_PLAY = True
-USE_OPENING = True
+USE_OPENING = False
 USE_GAVIOTA = True
 PONDER = False
 
@@ -766,12 +742,9 @@ def clear_history() -> None:
 
 def clean_history() -> None:
     global history
-
+    
     for turn in (chess.WHITE, chess.BLACK):
-
-        for key, value in history[turn].items():
-
-            history[turn][key] = value >> 1
+        history[turn] = {key: value >> 1 for key, value in history[turn].items()}
 
 def get_phase_value(b: EvalBoard | chess.Board, color: chess.Color) -> int:
     global PHASE_VALUES
@@ -922,7 +895,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
             break
         if bestmove not in nb.legal_moves():
             break
-        if nb.is_game_over:
+        if nb.is_game_over():
             break
         pv.append(bestmove.uci()) # type: ignore
         nb.apply(bestmove, None, None, None)
@@ -930,7 +903,6 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
-    global MAX_PLY
     tt_entry = tt.get(b.zobrist_hash)
     if tt_entry is not None:
         tt_move = tt_entry.move
@@ -960,10 +932,12 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     if not_captures_only:
         quiets: list[tuple[float, chess.Move, bool, bool, bool]] = []
 
-    if b.status(chess.CHECK):
+    if b.in_check:
         captures_only = False
 
+    moves_searched = 0
     for move in b_board.legal_moves():
+        moves_searched += 1
         if move == tt_move:
             continue
 
@@ -997,6 +971,8 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
             continue
         elif not_captures_only:
             quiets.append((history_side.get(move, 0), move, False, False, move.is_castling(b_board))) # type: ignore
+    if moves_searched == 0:
+        yield (None, False, False, False) # type: ignore
 
     winning.sort(key=lambda x: x[0], reverse=True)
     for move in winning:
@@ -1044,11 +1020,6 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         raise TimeoutError
     
     nodes_searched += 1
-
-    if b.status(chess.CHECKMATE):
-        return -100000.0 + ply
-    elif b.status(chess.DRAW):
-        return 0.0
     
     stand_pat = b.evaluation
     if stand_pat >= beta:
@@ -1056,7 +1027,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     if stand_pat > alpha:
         alpha = stand_pat
 
-    if stand_pat + DELTA < alpha and not b.status(chess.CHECK):
+    if stand_pat + DELTA < alpha and not b.in_check:
         if b.turn is chess.WHITE:
             if not (b[(chess.WHITE, chess.PAWN)] & chess.RANK_7):
                 return alpha
@@ -1068,7 +1039,6 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     entry = tt.get(b_hash)
     in_tt = entry is not None
     original_alpha = alpha
-    first_move = None
     best_move = None
 
     if in_tt:
@@ -1086,33 +1056,12 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
             return beta
         elif flag == Flag.UPPER and score <= alpha:
             return alpha
-            
-        first_move = entry.move # type: ignore
-        
-        if (first_move is not None and
-            (first_move.is_capture(b.board) or
-             first_move.is_promotion() and first_move.promotion is chess.QUEEN)):
-            b.apply(first_move, None, None, None)
-            evaluation = -quiesce(b, -beta, -alpha, ply + 1)
-            b.undo()
-
-            if evaluation >= beta:
-                tt_score = evaluation
-                if 90000.0 < tt_score < math.inf:
-                    tt_score += ply
-                elif -math.inf < tt_score < -90000.0:
-                    tt_score -= ply
-                
-                if entry.depth <= 0: # type: ignore
-                    store_tt(b, b_hash, first_move, 0, tt_score, Flag.LOWER)
-                
-                return beta
-            
-            if evaluation > alpha:
-                alpha = evaluation
-                best_move = first_move
     
     for move, is_capture, is_promotion, is_castling in order_moves(b, ply, captures_only = True):
+        if move is None:
+            if b.in_check:
+                return -100000.0 + ply
+            return 0.0
         b.apply(move, is_capture, is_promotion, is_castling)
         evaluation = -quiesce(b, -beta, -alpha, ply + 1)
         b.undo()
@@ -1159,11 +1108,6 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
 
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
-
-    if b.status(chess.CHECKMATE):
-        return -100000.0 + ply
-    elif b.status(chess.DRAW):
-        return 0.0
     
     if b.piece_count <= 5 and USE_GAVIOTA:
         chs_board = chs.Board(b.fen())
@@ -1178,7 +1122,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                 else:
                     return -100000.0 + ply + dtm
     
-    in_check = b.status(chess.CHECK)
+    in_check = b.in_check
     
     b_hash = b.zobrist_hash
     entry = tt.get(b_hash)
@@ -1221,6 +1165,10 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
                 return beta
         
     for move, is_capture, is_promotion, is_castling in order_moves(b, ply):
+        if move is None:
+            if b.in_check:
+                return -100000.0 + ply
+            return 0.0
         moves_searched += 1
         b.apply(move, is_capture, is_promotion, is_castling)
         evaluation = None
@@ -1440,7 +1388,7 @@ def main() -> None:
 
     print(board.pretty())
 
-    while not board.status(chess.CHECKMATE) and not board.status(chess.DRAW):
+    while not (board.board in chess.CHECKMATE or board.board in chess.DRAW):
         if not SELF_PLAY:
             best_move = get_input(board)
             board.apply(best_move, None, None, None)
