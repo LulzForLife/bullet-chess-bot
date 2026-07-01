@@ -613,7 +613,7 @@ END = 0
 USE_UCI = "--uci" in sys.argv
 CHECK_EXTENSION = False
 SELF_PLAY = True
-USE_OPENING = False
+USE_OPENING = True
 USE_GAVIOTA = True
 PONDER = False
 
@@ -914,8 +914,10 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
     if tt_move is not None:
         yield (tt_move, tt_move.is_capture(b_board), tt_move.is_promotion(), tt_move.is_castling(b_board))
     
+    captures_first = False
     if b.in_check:
         captures_only = False
+        captures_first = True
 
     piece_values = PIECE_VALUES
     history_side = history[b.turn]
@@ -959,11 +961,14 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
             victim_type = chess.PAWN if victim is None else victim.piece_type
 
             attacker_type = board_get(move.origin).piece_type # type: ignore
-            score = piece_values[victim_type] * 10 - piece_values[attacker_type]
+            victim_value = piece_values[victim_type]
+            attacker_value = piece_values[attacker_type]
+            diff = victim_value - attacker_value
+            score = victim_value * 10 - attacker_value
 
-            if score > 0:
+            if diff > 0:
                 winning.append((score, move, True, False, False))
-            elif score == 0:
+            elif diff == 0:
                 equal.append((move, True, False, False))
             else:
                 losing.append((score, move, True, False, False))
@@ -980,6 +985,11 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
 
     for move in equal:
         yield move
+    
+    if captures_first:
+        losing.sort(key=lambda x: x[0], reverse=True)
+        for move in losing:
+            yield move[1:]
 
     if not_captures_only:
 
@@ -993,9 +1003,10 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
         for move in quiets: # type: ignore
             yield move[1:]
     
-    losing.sort(key=lambda x: x[0], reverse=True)
-    for move in losing:
-        yield move[1:]
+    if not captures_first:
+        losing.sort(key=lambda x: x[0], reverse=True)
+        for move in losing:
+            yield move[1:]
 
 def store_killer(move: chess.Move, ply: int) -> None:
     global killer_moves
@@ -1060,7 +1071,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
         elif flag == Flag.UPPER and score <= alpha:
             return alpha
     
-    for move, is_capture, is_promotion, is_castling in order_moves(b, ply, captures_only = True):
+    for move, is_capture, is_promotion, is_castling in order_moves(b, ply, captures_only=True):
         if move is None:
             if in_check:
                 return -100000.0 + ply
