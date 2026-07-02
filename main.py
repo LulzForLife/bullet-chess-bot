@@ -79,7 +79,7 @@ class EvalBoard():
 
         if move is None:
             self.board.apply(move)
-            self.update_status()
+            self.in_check = self.board in chess.CHECK
             self.mg_evaluation = -self.mg_evaluation
             self.eg_evaluation = -self.eg_evaluation
             self.zobrist_hash = self_zobrist_hash
@@ -256,7 +256,7 @@ class EvalBoard():
             old_castle_opp = self_ks_b or self_qs_b
 
         self.board.apply(move)
-        self.update_status()
+        self.in_check = self.board in chess.CHECK
 
         if is_castling or origin_piece_type is chess.KING:
             if self_turn_is_white:
@@ -365,9 +365,6 @@ class EvalBoard():
             
         return move
     
-    def update_status(self) -> None:
-        self.in_check = chess.CHECK.__contains__(self.board)
-    
     def update_castling_rights(self) -> None:
         self.ks_w = self.board.castling_rights.kingside(chess.WHITE)
         self.qs_w = self.board.castling_rights.queenside(chess.WHITE)
@@ -385,11 +382,10 @@ class EvalBoard():
         n.eg_evaluation = eg_eval(n.board)
         n.white_phase = get_phase_value(n.board, chess.WHITE)
         n.black_phase = get_phase_value(n.board, chess.BLACK)
-        n.update_status()
+        n.in_check = n.board in chess.CHECK
         n.update_castling_rights()
         n.update_piece_count()
         n.state_stack = []
-        n.update_status()
         n.zobrist_hash = hash_board(n.board)
         return n
     
@@ -592,6 +588,9 @@ MIRROR_BOARD = [
     0,  1,  2,  3,  4,  5,  6,  7,
 ]
 
+# todo
+# precalculate the psqt for black and white instead of using MIRROR_BOARD
+
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
@@ -618,6 +617,7 @@ USE_GAVIOTA = True
 PONDER = False
 
 nodes_searched = 0
+sel_depth = 0
 
 tt: dict[int, TTEntry] = {}
 
@@ -1025,12 +1025,17 @@ def store_tt(b: EvalBoard, b_hash: int, move: chess.Move | None, depth: int, sco
     tt[b_hash] = entry
 
 def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
-    global tt, nodes_searched, DELTA, END
+    global nodes_searched, sel_depth, tt, DELTA, END
 
     if time.perf_counter() >= END:
         raise TimeoutError
     
     nodes_searched += 1
+    if ply > sel_depth:
+        sel_depth = ply
+
+    if b.board in chess.THREEFOLD_REPETITION or b.board in chess.INSUFFICIENT_MATERIAL:
+        return 0.0
 
     in_check = b.in_check
     
@@ -1113,12 +1118,14 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     return alpha
 
 def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0, is_singular: bool = False, excluded_move: chess.Move | None = None) -> float:
-    global tt, nodes_searched, LMR, CHECK_EXTENSION, END, USE_QUIESCE
+    global nodes_searched, sel_depth, tt, LMR, CHECK_EXTENSION, END, USE_QUIESCE
     
     if time.perf_counter() >= END:
         raise TimeoutError
 
     nodes_searched += 1
+    if ply > sel_depth:
+        sel_depth = ply
 
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
@@ -1273,7 +1280,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     return alpha
 
 def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY, *, print_info: bool = True) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, USE_UCI, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
+    global nodes_searched, sel_depth, USE_UCI, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
     
     nodes_searched = 0
     start_time = time.perf_counter()
@@ -1299,7 +1306,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                         nps = int(nodes_searched / elapsed) if elapsed > 0 else 0
                         pv = get_pv(b, opening_move)
                         if print_info:
-                            print(f"info depth {depth} score {evaluation} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
+                            print(f"info depth {depth} seldepth {sel_depth} score {evaluation} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
                     elif not USE_UCI and print_info:
                         print(f"Depth: {depth} (prefill)    ", end = '\r')
             except TimeoutError:
@@ -1320,7 +1327,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     elapsed_ms = max(1, int(elapsed * 1000))
                     pv = get_pv(b, gaviota_move)
                     if print_info:
-                        print(f"info depth 0 score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {' '.join(pv)}", flush=True)
+                        print(f"info depth {plies_to_mate} score {score_str} nodes 0 nps 0 time {elapsed_ms} pv {' '.join(pv)}", flush=True)
                 else:
                     prefix = "-" if b.turn is chess.WHITE else ""
                     score_str = f"{prefix}M{abs(moves_to_mate)}"
@@ -1336,6 +1343,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
     try:
         for depth in range(1, max_depth + 1):
+            sel_depth = 0
 
             b_check = b.copy()
 
@@ -1398,7 +1406,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 if best_move is not None:
                     pv = get_pv(b, best_move)
                     if print_info:
-                        print(f"info depth {depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
+                        print(f"info depth {depth} seldepth {sel_depth} score {score_str} nodes {nodes_searched} nps {nps} time {elapsed_ms} pv {' '.join(pv)}", flush=True)
             else:
                 if print_info:
                     print(f"Depth: {depth} ({nps}nps)       ", end = "\r")
