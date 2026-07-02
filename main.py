@@ -120,23 +120,17 @@ class EvalBoard():
             is_castling = move.is_castling(self.board)
         
         piece_values = PIECE_VALUES
-        mg_bonus = MIDDLEGAME_BONUS
-        eg_bonus = ENDGAME_BONUS
+        mg_bonus = MIDDLEGAME_BONUS_WHITE if self_turn_is_white else MIDDLEGAME_BONUS_BLACK
+        eg_bonus = ENDGAME_BONUS_WHITE if self_turn_is_white else ENDGAME_BONUS_BLACK
         type_to_int = TYPE_TO_INT
         phase = PHASE_VALUES
 
         dSmg = dSeg = 0.0
         
-        if self_turn is chess.WHITE:
-            psqt_old_mg = mg_bonus[origin_piece_type][origin_idx_mir]
-            psqt_new_mg = mg_bonus[origin_piece_type][dest_idx_mir]
-            psqt_old_eg = eg_bonus[origin_piece_type][origin_idx_mir]
-            psqt_new_eg = eg_bonus[origin_piece_type][dest_idx_mir]
-        else:
-            psqt_old_mg = mg_bonus[origin_piece_type][origin_idx]
-            psqt_new_mg = mg_bonus[origin_piece_type][dest_idx]
-            psqt_old_eg = eg_bonus[origin_piece_type][origin_idx]
-            psqt_new_eg = eg_bonus[origin_piece_type][dest_idx]
+        psqt_old_mg = mg_bonus[origin_piece_type][origin_idx_mir]
+        psqt_new_mg = mg_bonus[origin_piece_type][dest_idx_mir]
+        psqt_old_eg = eg_bonus[origin_piece_type][origin_idx_mir]
+        psqt_new_eg = eg_bonus[origin_piece_type][dest_idx_mir]
 
         dSmg += (psqt_new_mg - psqt_old_mg)
         dSeg += (psqt_new_eg - psqt_old_eg)
@@ -158,12 +152,8 @@ class EvalBoard():
 
             mg_piece_value = eg_piece_value = piece_values[dest_piece_type] # type: ignore
 
-            if self_turn_is_white:
-                mg_piece_value += mg_bonus[dest_piece_type][dest_idx] # type: ignore
-                eg_piece_value += eg_bonus[dest_piece_type][dest_idx] # type: ignore
-            else:
-                mg_piece_value += mg_bonus[dest_piece_type][dest_idx_mir] # type: ignore
-                eg_piece_value += eg_bonus[dest_piece_type][dest_idx_mir] # type: ignore
+            mg_piece_value += mg_bonus[dest_piece_type][dest_idx] # type: ignore
+            eg_piece_value += eg_bonus[dest_piece_type][dest_idx] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
@@ -180,13 +170,9 @@ class EvalBoard():
                 self.black_phase += phase[piece_type] - phase[chess.PAWN] # type: ignore
 
             mg_piece_value = eg_piece_value = piece_values[move.promotion] - piece_values[chess.PAWN] # type: ignore
-            
-            if self_turn_is_white:
-                mg_piece_value += mg_bonus[piece_type][dest_idx] # type: ignore
-                eg_piece_value += eg_bonus[piece_type][dest_idx] # type: ignore
-            else:
-                mg_piece_value += mg_bonus[piece_type][dest_idx_mir] # type: ignore
-                eg_piece_value += eg_bonus[piece_type][dest_idx_mir] # type: ignore
+
+            mg_piece_value += mg_bonus[piece_type][dest_idx] # type: ignore
+            eg_piece_value += eg_bonus[piece_type][dest_idx] # type: ignore
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
@@ -203,12 +189,8 @@ class EvalBoard():
 
             mg_piece_value = eg_piece_value = piece_values[chess.PAWN]
 
-            if self_turn_is_white:
-                mg_piece_value += mg_bonus[chess.PAWN][dest_idx - 8]
-                eg_piece_value += eg_bonus[chess.PAWN][dest_idx - 8]
-            else:
-                mg_piece_value += mg_bonus[chess.PAWN][dest_idx_mir - 8]
-                eg_piece_value += eg_bonus[chess.PAWN][dest_idx_mir - 8]
+            mg_piece_value += mg_bonus[chess.PAWN][dest_idx - 8]
+            eg_piece_value += eg_bonus[chess.PAWN][dest_idx - 8]
 
             dSmg += mg_piece_value
             dSeg += eg_piece_value
@@ -451,7 +433,18 @@ PHASE_VALUES = {
     chess.PAWN: 0
 }
 
-MIDDLEGAME_BONUS = {
+MIRROR_BOARD = [
+    56, 57, 58, 59, 60, 61, 62, 63,
+    48, 49, 50, 51, 52, 53, 54, 55,
+    40, 41, 42, 43, 44, 45, 46, 47,
+    32, 33, 34, 35, 36, 37, 38, 39,
+    24, 25, 26, 27, 28, 29, 30, 31,
+    16, 17, 18, 19, 20, 21, 22, 23,
+    8,  9,  10, 11, 12, 13, 14, 15,
+    0,  1,  2,  3,  4,  5,  6,  7,
+]
+
+MIDDLEGAME_BONUS_WHITE = {
     chess.PAWN: [
         0,  0,  0,  0,  0,  0,  0,  0,
         50, 50, 50, 50, 50, 50, 50, 50,
@@ -514,7 +507,7 @@ MIDDLEGAME_BONUS = {
     ]
 }
 
-ENDGAME_BONUS = {
+ENDGAME_BONUS_WHITE = {
     chess.PAWN: [
         0,  0,  0,  0,  0,  0,  0,  0,
         80, 80, 80, 80, 80, 80, 80, 80,
@@ -577,29 +570,29 @@ ENDGAME_BONUS = {
     ]
 }
 
-MIRROR_BOARD = [
-    56, 57, 58, 59, 60, 61, 62, 63,
-    48, 49, 50, 51, 52, 53, 54, 55,
-    40, 41, 42, 43, 44, 45, 46, 47,
-    32, 33, 34, 35, 36, 37, 38, 39,
-    24, 25, 26, 27, 28, 29, 30, 31,
-    16, 17, 18, 19, 20, 21, 22, 23,
-    8,  9,  10, 11, 12, 13, 14, 15,
-    0,  1,  2,  3,  4,  5,  6,  7,
-]
+MIDDLEGAME_BONUS_BLACK = {
+    piece: [
+        board[MIRROR_BOARD[sq]]
+    for sq in range(len(board))]
+    for piece, board in MIDDLEGAME_BONUS_WHITE.items()
+}
 
-# todo
-# precalculate the psqt for black and white instead of using MIRROR_BOARD
+ENDGAME_BONUS_BLACK = {
+    piece: [
+        board[MIRROR_BOARD[sq]]
+    for sq in range(len(board))]
+    for piece, board in ENDGAME_BONUS_WHITE.items()
+}
 
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 
-KS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.F8.index()] - MIDDLEGAME_BONUS[chess.ROOK][chess.H8.index()]
-KS_EG = ENDGAME_BONUS[chess.ROOK][chess.F8.index()] - ENDGAME_BONUS[chess.ROOK][chess.H8.index()]
-QS_MG = MIDDLEGAME_BONUS[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS[chess.ROOK][chess.A8.index()]
-QS_EG = ENDGAME_BONUS[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS[chess.ROOK][chess.A8.index()]
+KS_MG = MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.F8.index()] - MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.H8.index()]
+KS_EG = ENDGAME_BONUS_WHITE[chess.ROOK][chess.F8.index()] - ENDGAME_BONUS_WHITE[chess.ROOK][chess.H8.index()]
+QS_MG = MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.A8.index()]
+QS_EG = ENDGAME_BONUS_WHITE[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS_WHITE[chess.ROOK][chess.A8.index()]
 BLACK_EP_MASK: list[chess.Bitboard] = []
 WHITE_EP_MASK: list[chess.Bitboard] = []
 
@@ -771,7 +764,7 @@ def mg_eval(b: chess.Board) -> float:
             continue
         piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
-        psqb = MIDDLEGAME_BONUS[piece_type][index]
+        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index]
         evaluation += PIECE_VALUES[piece_type] + psqb
 
     for square in black_bitboard:
@@ -780,7 +773,7 @@ def mg_eval(b: chess.Board) -> float:
             raise ValueError
         piece_type = piece.piece_type
         index = square.index()
-        psqb = MIDDLEGAME_BONUS[piece_type][index]
+        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index]
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
     if b.castling_rights.any(chess.WHITE):
@@ -811,7 +804,7 @@ def eg_eval(b: chess.Board) -> float:
             continue
         piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
-        psqb = ENDGAME_BONUS[piece_type][index]
+        psqb = ENDGAME_BONUS_WHITE[piece_type][index]
         evaluation += PIECE_VALUES[piece_type] + psqb
 
     for square in black_bitboard:
@@ -820,7 +813,7 @@ def eg_eval(b: chess.Board) -> float:
             raise ValueError
         piece_type = piece.piece_type
         index = square.index()
-        psqb = ENDGAME_BONUS[piece_type][index]
+        psqb = ENDGAME_BONUS_WHITE[piece_type][index]
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
     if b.castling_rights.any(chess.WHITE):
@@ -856,8 +849,8 @@ def evaluate(b: chess.Board) -> float:
             raise ValueError
         piece_type = piece.piece_type
         index = MIRROR_BOARD[square.index()]
-        psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
-        psqb += ENDGAME_BONUS[piece_type][MIRROR_BOARD[square.index()]] * endgame_percentage
+        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index] * middlegame_percentage
+        psqb += ENDGAME_BONUS_WHITE[piece_type][MIRROR_BOARD[index]] * endgame_percentage
         evaluation += PIECE_VALUES[piece_type] + psqb
 
     for square in black_bitboard:
@@ -866,8 +859,8 @@ def evaluate(b: chess.Board) -> float:
             raise ValueError
         piece_type = piece.piece_type
         index = square.index()
-        psqb = MIDDLEGAME_BONUS[piece_type][index] * middlegame_percentage
-        psqb += ENDGAME_BONUS[piece_type][square.index()] * endgame_percentage
+        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index] * middlegame_percentage
+        psqb += ENDGAME_BONUS_WHITE[piece_type][index] * endgame_percentage
         evaluation -= PIECE_VALUES[piece_type] + psqb
 
     if b.turn == chess.BLACK:
