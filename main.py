@@ -1020,14 +1020,15 @@ def store_tt(b: EvalBoard, b_hash: int, move: chess.Move | None, depth: int, sco
 def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     global nodes_searched, sel_depth, tt, DELTA, END
 
-    if time.perf_counter() >= END:
-        raise TimeoutError
+    if nodes_searched % 256 == 0:
+        if time.perf_counter() >= END:
+            raise TimeoutError
     
     nodes_searched += 1
     if ply > sel_depth:
         sel_depth = ply
 
-    if b.board in chess.THREEFOLD_REPETITION or b.board in chess.INSUFFICIENT_MATERIAL:
+    if b.board in chess.INSUFFICIENT_MATERIAL or b.board in chess.THREEFOLD_REPETITION:
         return 0.0
 
     in_check = b.in_check
@@ -1112,13 +1113,17 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
 
 def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int = 0, is_singular: bool = False, excluded_move: chess.Move | None = None) -> float:
     global nodes_searched, sel_depth, tt, LMR, CHECK_EXTENSION, END, USE_QUIESCE
-    
-    if time.perf_counter() >= END:
-        raise TimeoutError
+
+    if nodes_searched % 256 == 0:
+        if time.perf_counter() >= END:
+            raise TimeoutError
 
     nodes_searched += 1
     if ply > sel_depth:
         sel_depth = ply
+
+    if b.board in chess.INSUFFICIENT_MATERIAL or b.board in chess.THREEFOLD_REPETITION:
+        return 0.0
 
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)

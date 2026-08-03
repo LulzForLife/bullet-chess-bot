@@ -209,8 +209,8 @@ def uci_loop() -> None:
         if cmd == "uci":
             print("id name KikiBot")
             print("id author kiranmjlowe")
-            print("option name Opening Book type check default true")
-            print("option name Endgame Table type check default true")
+            print("option name Opening_Book type check default true")
+            print("option name Endgame_Table type check default true")
             print("uciok", flush=True)
         elif cmd == "isready":
             print("readyok", flush=True)
