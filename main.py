@@ -667,7 +667,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     if ply > sel_depth:
         sel_depth = ply
 
-    if b.board in chess.INSUFFICIENT_MATERIAL or b.board in chess.THREEFOLD_REPETITION:
+    if b.board in chess.DRAW:
         return 0.0
 
     in_check = b.in_check
@@ -761,7 +761,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     if ply > sel_depth:
         sel_depth = ply
 
-    if b.board in chess.INSUFFICIENT_MATERIAL or b.board in chess.THREEFOLD_REPETITION:
+    if b.board in chess.DRAW:
         return 0.0
 
     if depth <= 0:

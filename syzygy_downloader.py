@@ -3,7 +3,6 @@ import os
 import shutil
 import requests
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configuration
 BASE_URL = "https://chess.cygnitec.com/tablebases/syzygy/"
