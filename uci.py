@@ -193,7 +193,7 @@ def uci_loop() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore # Ensure line buffering is strictly active
     main.USE_UCI = True                          # Override engine flag to enforce proper logging output
     main.USE_OPENING = True
-    main.USE_GAVIOTA = os.path.exists("gaviota_5")
+    main.USE_SYZYGY = os.path.exists("syzygy")
     board = main.EvalBoard()
     
     while True:
@@ -226,7 +226,7 @@ def uci_loop() -> None:
                 if parts[1] == "name" and parts[2] == "Opening_Book":
                     main.USE_OPENING = parts[4].lower() == "true"
                 if parts[1] == "name" and parts[2] == "Endgame_Table":
-                    main.USE_GAVIOTA = parts[4].lower() == "true" and os.path.exists("gaviota_5")
+                    main.USE_SYZYGY = parts[4].lower() == "true" and os.path.exists("syzygy")
         elif cmd == "ponderhit":
             main.END = time.perf_counter() + TIME_LIMIT
         elif cmd == "stop":

@@ -6,7 +6,7 @@ import time
 import os
 
 main.USE_OPENING = True
-main.USE_GAVIOTA = os.path.exists("gaviota_5")
+main.USE_SYZYGY = os.path.exists("syzygy")
 main.USE_UCI = False
 
 try:

@@ -26,12 +26,12 @@ def test_testcases(fp: str) -> None:
 def test_apply_undo(tests: int) -> None:
     for _ in tqdm.tqdm(range(tests)):
         test_position = EvalBoard()
-        initial_eval = test_position.evaluation
+        initial_eval = test_position.evaluate()
         while not test_position.is_game_over:
             test_position.apply(utils.random_legal_move(test_position.board), None, None, None)
         while test_position.history:
             test_position.undo()
-        if test_position.evaluation != initial_eval:
+        if test_position.evaluate() != initial_eval:
             raise ValueError("Mismatch with applying/undoing!")
 
 def test_perft(depth: int) -> None:

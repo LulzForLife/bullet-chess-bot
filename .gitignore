@@ -180,8 +180,8 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# Large files
-gaviota_5
+# Large folders
+syzygy
 
-# Secret files
+# Secret keys
 lichess-api-key

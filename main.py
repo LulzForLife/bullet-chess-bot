@@ -8,9 +8,10 @@ from dataclasses import dataclass
 import bulletchess as chess
 import chess as chs
 import chess.polyglot as polyglot
-import chess.gaviota as gaviota
+import chess.syzygy as syzygy
 
 from zobrist import hash_board, POLYGLOT_RANDOM_ARRAY, TYPE_TO_INT
+import nnue
 
 from collections.abc import Generator
 
@@ -28,12 +29,11 @@ class TTEntry:
     age: int
 
 class EvalBoard():
-    __slots__ = ("board", "mg_evaluation", "eg_evaluation", "white_phase", "black_phase", "state_stack", "in_check", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
+    __slots__ = ("board", "white_phase", "black_phase", "state_stack", "in_check", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
 
     def __init__(self) -> None:
         self.board = chess.Board()
-        self.mg_evaluation = mg_eval(self.board)
-        self.eg_evaluation = eg_eval(self.board)
+
         self.white_phase = get_phase_value(self.board, chess.WHITE)
         self.black_phase = get_phase_value(self.board, chess.BLACK)
 
@@ -69,7 +69,7 @@ class EvalBoard():
     
     def apply(self, move: chess.Move | None, is_capture: bool | None, is_promo: bool | None, is_castling: bool | None) -> None:
         self.state_stack.append(
-            (self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
+            (self.white_phase, self.black_phase,
              self.in_check, self.ks_w, self.qs_w, self.ks_b,
              self.qs_b, self.piece_count, self.zobrist_hash)
         )
@@ -80,8 +80,6 @@ class EvalBoard():
         if move is None:
             self.board.apply(move)
             self.in_check = self.board in chess.CHECK
-            self.mg_evaluation = -self.mg_evaluation
-            self.eg_evaluation = -self.eg_evaluation
             self.zobrist_hash = self_zobrist_hash
             return
         
@@ -90,17 +88,13 @@ class EvalBoard():
         origin = move.origin
         destination = move.destination
         origin_piece = self_board[origin]
-        dest_piece = self_board[destination]
         origin_piece_type = origin_piece.piece_type # type: ignore
-        if dest_piece is not None:
-            dest_piece_type = dest_piece.piece_type
-        else:
-            dest_piece_type = None
-        
+        dest_piece_type = self_board[destination]
+        if dest_piece_type is not None:
+            dest_piece_type = dest_piece_type.piece_type
+                
         origin_idx = origin.index()
         dest_idx = destination.index()
-        origin_idx_mir = MIRROR_BOARD[origin_idx]
-        dest_idx_mir = MIRROR_BOARD[dest_idx]
 
         self_turn = self.board.turn
         self_turn_is_white = self_turn is chess.WHITE
@@ -119,21 +113,8 @@ class EvalBoard():
         if is_castling is None:
             is_castling = move.is_castling(self.board)
         
-        piece_values = PIECE_VALUES
-        mg_bonus = MIDDLEGAME_BONUS_WHITE if self_turn_is_white else MIDDLEGAME_BONUS_BLACK
-        eg_bonus = ENDGAME_BONUS_WHITE if self_turn_is_white else ENDGAME_BONUS_BLACK
         type_to_int = TYPE_TO_INT
         phase = PHASE_VALUES
-
-        dSmg = dSeg = 0.0
-        
-        psqt_old_mg = mg_bonus[origin_piece_type][origin_idx_mir]
-        psqt_new_mg = mg_bonus[origin_piece_type][dest_idx_mir]
-        psqt_old_eg = eg_bonus[origin_piece_type][origin_idx_mir]
-        psqt_new_eg = eg_bonus[origin_piece_type][dest_idx_mir]
-
-        dSmg += (psqt_new_mg - psqt_old_mg)
-        dSeg += (psqt_new_eg - psqt_old_eg)
 
         pivot = int(self_turn_is_white)
         enemy_pivot = 1 - pivot
@@ -150,14 +131,6 @@ class EvalBoard():
             else:
                 self.white_phase -= phase[origin_piece_type]
 
-            mg_piece_value = eg_piece_value = piece_values[dest_piece_type] # type: ignore
-
-            mg_piece_value += mg_bonus[dest_piece_type][dest_idx] # type: ignore
-            eg_piece_value += eg_bonus[dest_piece_type][dest_idx] # type: ignore
-
-            dSmg += mg_piece_value
-            dSeg += eg_piece_value
-
             captured_index = type_to_int[dest_piece_type] * 2 + enemy_pivot # type: ignore
             self_zobrist_hash ^= poly[64 * captured_index + dest_idx]
 
@@ -169,14 +142,6 @@ class EvalBoard():
             else:
                 self.black_phase += phase[piece_type] - phase[chess.PAWN] # type: ignore
 
-            mg_piece_value = eg_piece_value = piece_values[move.promotion] - piece_values[chess.PAWN] # type: ignore
-
-            mg_piece_value += mg_bonus[piece_type][dest_idx] # type: ignore
-            eg_piece_value += eg_bonus[piece_type][dest_idx] # type: ignore
-
-            dSmg += mg_piece_value
-            dSeg += eg_piece_value
-
             promo_index = type_to_int[piece_type] * 2 + pivot # type: ignore
             self_zobrist_hash ^= poly[64 * promo_index + dest_idx]
 
@@ -187,38 +152,22 @@ class EvalBoard():
             else:
                 self.white_phase -= phase[chess.PAWN]
 
-            mg_piece_value = eg_piece_value = piece_values[chess.PAWN]
-
-            mg_piece_value += mg_bonus[chess.PAWN][dest_idx - 8]
-            eg_piece_value += eg_bonus[chess.PAWN][dest_idx - 8]
-
-            dSmg += mg_piece_value
-            dSeg += eg_piece_value
-
             passant_index = type_to_int[chess.PAWN] * 2 + enemy_pivot
             self_zobrist_hash ^= poly[64 * passant_index + ep_idx] # type: ignore
         
         if is_castling:
             if self_turn_is_white:
                 if dest_idx == 6:
-                    dSmg += KS_MG
-                    dSeg += KS_EG
                     castle_origin_idx = 7
                     castle_dest_idx = 5
                 else:
-                    dSmg += QS_MG
-                    dSeg += QS_EG
                     castle_origin_idx = 0
                     castle_dest_idx = 3
             else:
                 if dest_idx == 62:
-                    dSmg += KS_MG
-                    dSeg += KS_EG
                     castle_origin_idx = 63
                     castle_dest_idx = 61
                 else:
-                    dSmg += QS_MG
-                    dSeg += QS_EG
                     castle_origin_idx = 56
                     castle_dest_idx = 59
             castle_idx = type_to_int[chess.ROOK] * 2 + pivot
@@ -229,13 +178,6 @@ class EvalBoard():
         self_qs_w = self.qs_w
         self_ks_b = self.ks_b
         self_qs_b = self.qs_b
-
-        if self_turn_is_white:
-            old_castle_self = self_ks_w or self_qs_w
-            old_castle_opp = self_ks_b or self_qs_b
-        else:
-            old_castle_self = self_ks_w or self_qs_w
-            old_castle_opp = self_ks_b or self_qs_b
 
         self.board.apply(move)
         self.in_check = self.board in chess.CHECK
@@ -294,20 +236,6 @@ class EvalBoard():
                         self.ks_w = False
                         self_zobrist_hash ^= poly[768]
 
-        if self_turn_is_white:
-            new_castle_self = self.ks_w or self.qs_w
-            new_castle_opp = self.ks_b or self.qs_b
-        else:
-            new_castle_self = self.ks_w or self.qs_w
-            new_castle_opp = self.ks_b or self.qs_b
-
-        if old_castle_self and not new_castle_self:
-            dSmg += CASTLE_RIGHTS_BONUS
-            dSeg += CASTLE_RIGHTS_BONUS
-        if old_castle_opp and not new_castle_opp:
-            dSmg -= CASTLE_RIGHTS_BONUS
-            dSeg -= CASTLE_RIGHTS_BONUS
-
         if ep_square:
             file = ep_idx & 7 # type: ignore
             if self_turn_is_white:
@@ -329,9 +257,6 @@ class EvalBoard():
             if new_mask & self_board[(self_turn.opposite, chess.PAWN)]:
                 self_zobrist_hash ^= poly[772 + file]
 
-        self.mg_evaluation = -self.mg_evaluation - dSmg
-        self.eg_evaluation = -self.eg_evaluation - dSeg
-
         self.zobrist_hash = self_zobrist_hash
 
         return
@@ -340,7 +265,7 @@ class EvalBoard():
         move = self.board.undo()
 
         (
-            self.mg_evaluation, self.eg_evaluation, self.white_phase, self.black_phase,
+            self.white_phase, self.black_phase,
             self.in_check, self.ks_w, self.qs_w, self.ks_b,
             self.qs_b, self.piece_count, self.zobrist_hash
         ) = self.state_stack.pop()
@@ -360,8 +285,6 @@ class EvalBoard():
     def from_fen(cls, fen: str) -> EvalBoard:
         n = cls()
         n.board = chess.Board.from_fen(fen)
-        n.mg_evaluation = mg_eval(n.board)
-        n.eg_evaluation = eg_eval(n.board)
         n.white_phase = get_phase_value(n.board, chess.WHITE)
         n.black_phase = get_phase_value(n.board, chess.BLACK)
         n.in_check = n.board in chess.CHECK
@@ -374,8 +297,6 @@ class EvalBoard():
     def copy(self) -> EvalBoard:
         n = EvalBoard()
         n.board = self.board.copy()
-        n.mg_evaluation = self.mg_evaluation
-        n.eg_evaluation = self.eg_evaluation
         n.white_phase = self.white_phase
         n.black_phase = self.black_phase
         n.state_stack = self.state_stack.copy()
@@ -407,13 +328,8 @@ class EvalBoard():
         self_board = self.board
         return chess.CHECKMATE.__contains__(self_board) or chess.DRAW.__contains__(self_board)
     
-    @property
-    def evaluation(self) -> float:
-        phase = min(24, self.white_phase + self.black_phase)
-        mg_pct = phase / 24
-        eg_pct = (24 - phase) / 24
-
-        return (self.mg_evaluation * mg_pct) + (self.eg_evaluation * eg_pct)
+    def evaluate(self) -> float:
+        return nnue.nnue_evaluate_fen(self.fen())
 
 PIECE_VALUES = {
     chess.KING: 60000,
@@ -433,166 +349,11 @@ PHASE_VALUES = {
     chess.PAWN: 0
 }
 
-MIRROR_BOARD = [
-    56, 57, 58, 59, 60, 61, 62, 63,
-    48, 49, 50, 51, 52, 53, 54, 55,
-    40, 41, 42, 43, 44, 45, 46, 47,
-    32, 33, 34, 35, 36, 37, 38, 39,
-    24, 25, 26, 27, 28, 29, 30, 31,
-    16, 17, 18, 19, 20, 21, 22, 23,
-    8,  9,  10, 11, 12, 13, 14, 15,
-    0,  1,  2,  3,  4,  5,  6,  7,
-]
-
-MIDDLEGAME_BONUS_WHITE = {
-    chess.PAWN: [
-        0,  0,  0,  0,  0,  0,  0,  0,
-        50, 50, 50, 50, 50, 50, 50, 50,
-        10, 10, 20, 30, 30, 20, 10, 10,
-        5,  5, 10, 25, 25, 10,  5,  5,
-        0,  0,  0, 20, 20,  0,  0,  0,
-        5, -5,-10,  0,  0,-10, -5,  5,
-        5, 10, 10,-20,-20, 10, 10,  5,
-        0,  0,  0,  0,  0,  0,  0,  0
-    ],
-    chess.KNIGHT: [
-        -50,-40,-30,-30,-30,-30,-40,-50,
-        -40,-20,  0,  0,  0,  0,-20,-40,
-        -30,  0, 10, 15, 15, 10,  0,-30,
-        -30,  5, 15, 20, 20, 15,  5,-30,
-        -30,  0, 15, 20, 20, 15,  0,-30,
-        -30,  5, 10, 15, 15, 10,  5,-30,
-        -40,-20,  0,  5,  5,  0,-20,-40,
-        -50,-40,-30,-30,-30,-30,-40,-50
-    ],
-    chess.BISHOP: [
-        -20,-10,-10,-10,-10,-10,-10,-20,
-        -10,  5,  0,  0,  0,  0,  5,-10,
-        -10, 10, 10, 10, 10, 10, 10,-10,
-        -10,  0, 10, 10, 10, 10,  0,-10,
-        -10,  5,  5, 10, 10,  5,  5,-10,
-        -10,  0,  5, 10, 10,  5,  0,-10,
-        -10,  0,  0,  0,  0,  0,  0,-10,
-        -20,-10,-10,-10,-10,-10,-10,-20
-    ],
-    chess.ROOK: [
-        0,  0,  0,  5,  5,  0,  0,  0,
-        -5,  0,  0,  0,  0,  0,  0, -5,
-        -5,  0,  0,  0,  0,  0,  0, -5,
-        -5,  0,  0,  0,  0,  0,  0, -5,
-        -5,  0,  0,  0,  0,  0,  0, -5,
-        -5,  0,  0,  0,  0,  0,  0, -5,
-        5, 10, 10, 10, 10, 10, 10,  5,
-        0,  0,  0,  0,  0,  0,  0,  0
-    ],
-    chess.QUEEN: [
-        -20,-10,-10, -5, -5,-10,-10,-20,
-        -10,  0,  5,  0,  0,  0,  0,-10,
-        -10,  5,  5,  5,  5,  5,  0,-10,
-        -5,  0,  5,  5,  5,  5,  0, -5,
-        0,  0,  5,  5,  5,  5,  0, -5,
-        -10,  0,  5,  5,  5,  5,  0,-10,
-        -10,  0,  0,  0,  0,  0,  0,-10,
-        -20,-10,-10, -5, -5,-10,-10,-20
-    ],
-    chess.KING: [
-        -30,-40,-40,-50,-50,-40,-40,-30,
-        -30,-40,-40,-50,-50,-40,-40,-30,
-        -30,-40,-40,-50,-50,-40,-40,-30,
-        -30,-40,-40,-50,-50,-40,-40,-30,
-        -20,-30,-30,-40,-40,-30,-30,-20,
-        -10,-20,-20,-20,-20,-20,-20,-10,
-        20, 20,  0,  0,  0,  0, 20, 20,
-        20, 30, 20,  0,  0, 10, 30, 20
-    ]
-}
-
-ENDGAME_BONUS_WHITE = {
-    chess.PAWN: [
-        0,  0,  0,  0,  0,  0,  0,  0,
-        80, 80, 80, 80, 80, 80, 80, 80,
-        40, 40, 50, 60, 60, 50, 40, 40,
-        20, 20, 30, 40, 40, 30, 20, 20,
-        10, 10, 20, 30, 30, 20, 10, 10,
-        5,  5, 10, 20, 20, 10,  5,  5,
-        0,  0,  0,  0,  0,  0,  0,  0,
-        0,  0,  0,  0,  0,  0,  0,  0
-    ],
-    chess.KNIGHT: [
-        -40,-30,-20,-20,-20,-20,-30,-40,
-        -30,-10,  0,  5,  5,  0,-10,-30,
-        -20,  5, 10, 15, 15, 10,  5,-20,
-        -20, 10, 15, 20, 20, 15, 10,-20,
-        -20, 10, 15, 20, 20, 15, 10,-20,
-        -20,  5, 10, 15, 15, 10,  5,-20,
-        -30,-10,  0,  5,  5,  0,-10,-30,
-        -40,-30,-20,-20,-20,-20,-30,-40
-    ],
-    chess.BISHOP: [
-        -20,-10,-10,-10,-10,-10,-10,-20,
-        -10,  5,  0,  0,  0,  0,  5,-10,
-        -10, 10, 10, 10, 10, 10, 10,-10,
-        -10,  0, 10, 10, 10, 10,  0,-10,
-        -10,  5,  5, 10, 10,  5,  5,-10,
-        -10,  0,  5, 10, 10,  5,  0,-10,
-        -10,  0,  0,  0,  0,  0,  0,-10,
-        -20,-10,-10,-10,-10,-10,-10,-20
-    ],
-    chess.ROOK: [
-        0,  0,  5, 10, 10,  5,  0,  0,
-        0,  5, 10, 15, 15, 10,  5,  0,
-        0,  5, 10, 15, 15, 10,  5,  0,
-        0,  5, 10, 15, 15, 10,  5,  0,
-        0,  5, 10, 15, 15, 10,  5,  0,
-        0,  5, 10, 15, 15, 10,  5,  0,
-        0,  0,  5, 10, 10,  5,  0,  0,
-        0,  0,  0,  0,  0,  0,  0,  0
-    ],
-    chess.QUEEN: [
-        -20,-10,-10, -5, -5,-10,-10,-20,
-        -10,  0,  0,  0,  0,  0,  0,-10,
-        -10,  0,  5,  5,  5,  5,  0,-10,
-        -5,  0,  5,  5,  5,  5,  0, -5,
-        0,  0,  5,  5,  5,  5,  0, -5,
-        -10,  0,  5,  5,  5,  5,  0,-10,
-        -10,  0,  0,  0,  0,  0,  0,-10,
-        -20,-10,-10, -5, -5,-10,-10,-20
-    ],
-    chess.KING: [
-        -50,-40,-30,-20,-20,-30,-40,-50,
-        -30,-20,-10,  0,  0,-10,-20,-30,
-        -30,-10, 20, 30, 30, 20,-10,-30,
-        -30,-10, 30, 40, 40, 30,-10,-30,
-        -30,-10, 30, 40, 40, 30,-10,-30,
-        -30,-10, 20, 30, 30, 20,-10,-30,
-        -30,-30,  0,  0,  0,  0,-30,-30,
-        -50,-30,-30,-30,-30,-30,-30,-50
-    ]
-}
-
-MIDDLEGAME_BONUS_BLACK = {
-    piece: [
-        board[MIRROR_BOARD[sq]]
-    for sq in range(len(board))]
-    for piece, board in MIDDLEGAME_BONUS_WHITE.items()
-}
-
-ENDGAME_BONUS_BLACK = {
-    piece: [
-        board[MIRROR_BOARD[sq]]
-    for sq in range(len(board))]
-    for piece, board in ENDGAME_BONUS_WHITE.items()
-}
-
 CASTLE_RIGHTS_BONUS = 10
 DELTA = PIECE_VALUES[chess.QUEEN]
 INITIAL_EPSILON = 25.0
 LMR = 2
 
-KS_MG = MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.F8.index()] - MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.H8.index()]
-KS_EG = ENDGAME_BONUS_WHITE[chess.ROOK][chess.F8.index()] - ENDGAME_BONUS_WHITE[chess.ROOK][chess.H8.index()]
-QS_MG = MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.D8.index()] - MIDDLEGAME_BONUS_WHITE[chess.ROOK][chess.A8.index()]
-QS_EG = ENDGAME_BONUS_WHITE[chess.ROOK][chess.D8.index()] - ENDGAME_BONUS_WHITE[chess.ROOK][chess.A8.index()]
 BLACK_EP_MASK: list[chess.Bitboard] = []
 WHITE_EP_MASK: list[chess.Bitboard] = []
 
@@ -606,7 +367,7 @@ USE_UCI = "--uci" in sys.argv
 CHECK_EXTENSION = False
 SELF_PLAY = True
 USE_OPENING = True
-USE_GAVIOTA = True
+USE_SYZYGY = True
 PONDER = False
 
 nodes_searched = 0
@@ -620,15 +381,13 @@ history: dict[chess.Color, dict[chess.Move, int]] = {
     chess.BLACK: {}
 }
 
-if os.path.exists("gaviota_5"):
+if os.path.exists("syzygy"):
     try:
-        tablebase = gaviota.open_tablebase("gaviota_5/5")
-        tablebase.add_directory("gaviota_5/4")
-        tablebase.add_directory("gaviota_5/3")
+        tablebase = syzygy.open_tablebase("syzygy")
     except OSError:
-        USE_GAVIOTA = False
+        USE_SYZYGY = False
 else:
-    USE_GAVIOTA = False
+    USE_SYZYGY = False
 opening_book = polyglot.open_reader("komodo.bin")
 
 for pivot, rank in ((0, chess.RANK_6), (1, chess.RANK_3)):
@@ -678,34 +437,41 @@ def get_best_opening_move(board: EvalBoard) -> chess.Move | None:
 def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tuple[None, None]:
     global tablebase
 
-    best_move = None
-    best_dtm = math.inf
+    chs_board = chs.Board(board.fen())
+
     best_wdl = -math.inf
+    best_dtz = math.inf
+    best_move = None
 
-    for move in board.legal_moves():
-        board.apply(move, None, None, None)
-        chs_board = chs.Board(board.fen())
-        
+    for move in chs_board.legal_moves:
+
+        chs_board.push(move)
+
         try:
-            dtm_score = -tablebase.probe_dtm(chs_board)
-            wdl_score = -tablebase.probe_wdl(chs_board)
-            if wdl_score > best_wdl:
-                best_dtm = dtm_score
-                best_wdl = wdl_score
-                best_move = move
-            elif wdl_score == best_wdl and dtm_score < best_dtm:
-                best_dtm = dtm_score
-                best_wdl = wdl_score
-                best_move = move
-                    
-        except (gaviota.MissingTableError, Exception):
-            ...
+            wdl = -tablebase.probe_wdl(chs_board)
+            dtz = -tablebase.probe_dtz(chs_board)#
+        except (syzygy.MissingTableError, Exception):
+            continue
 
-        board.undo()
+        chs_board.pop()
+
+        if wdl > best_wdl:
+            best_wdl = wdl
+            best_dtz = dtz
+            best_move = move
+        elif wdl == best_wdl and dtz < best_dtz:
+            best_dtz = dtz
+            best_move = move
 
     if best_move is not None:
-            
-        return best_move, 100000.0 - best_dtm
+        best_move = chess.Move.from_uci(best_move.uci())
+        if best_move is not None:
+            if best_wdl == 2:
+                return best_move, 1
+            elif best_wdl == -2:
+                return best_move, 0
+            else:
+                return best_move, 0.5
 
     return None, None
 
@@ -746,133 +512,6 @@ def get_phase_value(b: EvalBoard | chess.Board, color: chess.Color) -> int:
         for piece_type in chess.PIECE_TYPES
     )
 
-def mg_eval(b: chess.Board) -> float:
-    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, MIDDLEGAME_BONUS, CASTLE_RIGHTS_BONUS
-    if b in chess.CHECKMATE:
-        return -100000.0
-    elif b in chess.DRAW:
-        return 0.0
-    
-    evaluation = 0.0
-
-    white_bitboard = b[chess.WHITE]
-    black_bitboard = b[chess.BLACK]
-
-    for square in white_bitboard:
-        piece= b[square]
-        if piece is None:
-            continue
-        piece_type = piece.piece_type
-        index = MIRROR_BOARD[square.index()]
-        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index]
-        evaluation += PIECE_VALUES[piece_type] + psqb
-
-    for square in black_bitboard:
-        piece = b[square]
-        if piece is None:
-            raise ValueError
-        piece_type = piece.piece_type
-        index = square.index()
-        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index]
-        evaluation -= PIECE_VALUES[piece_type] + psqb
-
-    if b.castling_rights.any(chess.WHITE):
-        evaluation += CASTLE_RIGHTS_BONUS
-    if b.castling_rights.any(chess.BLACK):
-        evaluation -= CASTLE_RIGHTS_BONUS
-
-    if b.turn == chess.BLACK:
-        evaluation = -evaluation
-
-    return evaluation
-
-def eg_eval(b: chess.Board) -> float:
-    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, CASTLE_RIGHTS_BONUS
-    if b in chess.CHECKMATE:
-        return -100000.0
-    elif b in chess.DRAW:
-        return 0.0
-    
-    evaluation = 0.0
-
-    white_bitboard = b[chess.WHITE]
-    black_bitboard = b[chess.BLACK]
-
-    for square in white_bitboard:
-        piece= b[square]
-        if piece is None:
-            continue
-        piece_type = piece.piece_type
-        index = MIRROR_BOARD[square.index()]
-        psqb = ENDGAME_BONUS_WHITE[piece_type][index]
-        evaluation += PIECE_VALUES[piece_type] + psqb
-
-    for square in black_bitboard:
-        piece = b[square]
-        if piece is None:
-            raise ValueError
-        piece_type = piece.piece_type
-        index = square.index()
-        psqb = ENDGAME_BONUS_WHITE[piece_type][index]
-        evaluation -= PIECE_VALUES[piece_type] + psqb
-
-    if b.castling_rights.any(chess.WHITE):
-        evaluation += CASTLE_RIGHTS_BONUS
-    if b.castling_rights.any(chess.BLACK):
-        evaluation -= CASTLE_RIGHTS_BONUS
-
-    if b.turn == chess.BLACK:
-        evaluation = -evaluation
-
-    return evaluation
-
-def evaluate(b: chess.Board) -> float:
-    global PIECE_VALUES, PHASE_VALUES, MIRROR_BOARD, ENDGAME_BONUS, MIDDLEGAME_BONUS, CASTLE_RIGHTS_BONUS
-    if b in chess.CHECKMATE:
-        return -100000.0
-    elif b in chess.DRAW:
-        return 0.0
-
-    evaluation = 0.0
-
-    white_bitboard = b[chess.WHITE]
-    black_bitboard = b[chess.BLACK]
-
-    phase = min(24, get_phase_value(b, chess.WHITE) + get_phase_value(b, chess.BLACK))
-
-    middlegame_percentage = (phase / 24)
-    endgame_percentage = ((24 - phase) / 24)
-
-    for square in white_bitboard:
-        piece= b[square]
-        if piece is None:
-            raise ValueError
-        piece_type = piece.piece_type
-        index = MIRROR_BOARD[square.index()]
-        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index] * middlegame_percentage
-        psqb += ENDGAME_BONUS_WHITE[piece_type][MIRROR_BOARD[index]] * endgame_percentage
-        evaluation += PIECE_VALUES[piece_type] + psqb
-
-    for square in black_bitboard:
-        piece = b[square]
-        if piece is None:
-            raise ValueError
-        piece_type = piece.piece_type
-        index = square.index()
-        psqb = MIDDLEGAME_BONUS_WHITE[piece_type][index] * middlegame_percentage
-        psqb += ENDGAME_BONUS_WHITE[piece_type][index] * endgame_percentage
-        evaluation -= PIECE_VALUES[piece_type] + psqb
-
-    if b.turn == chess.BLACK:
-        evaluation = -evaluation
-    
-    if b.castling_rights.any(chess.WHITE):
-        evaluation += CASTLE_RIGHTS_BONUS
-    if b.castling_rights.any(chess.BLACK):
-        evaluation -= CASTLE_RIGHTS_BONUS
-
-    return evaluation
-
 def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     global tt
     nb = b.copy()
@@ -880,7 +519,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     nb.apply(move, None, None, None)
     b_hash = nb.zobrist_hash
     while True:
-        if nb.piece_count <= 5 and USE_GAVIOTA:
+        if nb.piece_count <= 5 and USE_SYZYGY:
             bestmove = get_best_tablebase_move(nb)[0]
         elif b_hash in tt:
             bestmove = tt[b_hash].move
@@ -1034,7 +673,7 @@ def quiesce(b: EvalBoard, alpha: float, beta: float, ply: int) -> float:
     in_check = b.in_check
     
     if not in_check:
-        stand_pat = b.evaluation
+        stand_pat = b.evaluate()
         if stand_pat >= beta:
             return beta
         if stand_pat > alpha:
@@ -1128,18 +767,18 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
     
-    if b.piece_count <= 5 and USE_GAVIOTA:
+    if b.piece_count <= 5 and USE_SYZYGY:
         chs_board = chs.Board(b.fen())
         wdl = tablebase.get_wdl(chs_board)
         if wdl is not None:
-            if wdl == 0:
+            if wdl == 0 or wdl == 1 or wdl == -1:
                 return 0.0
-            dtm = tablebase.get_dtm(chs_board)
-            if dtm is not None:
+            dtz = tablebase.get_dtz(chs_board)
+            if dtz is not None:
                 if wdl > 0:
-                    return 100000.0 - ply - dtm
+                    return 100000.0 - ply - dtz
                 else:
-                    return -100000.0 + ply + dtm
+                    return -100000.0 + ply + dtz
     
     in_check = b.in_check
     
@@ -1278,7 +917,7 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     return alpha
 
 def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int = MAX_PLY, *, print_info: bool = True) -> tuple[chess.Move | None, float | str]:
-    global nodes_searched, sel_depth, USE_UCI, USE_OPENING, USE_GAVIOTA, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
+    global nodes_searched, sel_depth, USE_UCI, USE_OPENING, USE_SYZYGY, INITIAL_EPSILON, MAX_PREFILL_TIME, END, PONDER
     
     nodes_searched = 0
     start_time = time.perf_counter()
@@ -1295,9 +934,11 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
             clean_history()
             END = start_time + min(time_limit / 10, MAX_PREFILL_TIME)
             try:
-                for depth in range(MAX_PLY):
+                for depth in range(1, MAX_PLY + 1):
                     new_b = b.copy()
+                    new_b.apply(opening_move, None, None, None)
                     evaluation = search_moves(new_b, depth, -150000.0, 150000.0)
+                    new_b.undo()
                     if USE_UCI:
                         elapsed = time.perf_counter() - start_time
                         elapsed_ms = max(1, int(elapsed * 1000))
@@ -1311,7 +952,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                 ...
             return (opening_move, evaluation)
 
-    if b.piece_count <= 5 and USE_GAVIOTA:
+    if b.piece_count <= 5 and USE_SYZYGY:
         gaviota_move, score = get_best_tablebase_move(b)
         if gaviota_move is not None and score is not None:
             if -1 < score < 1:
@@ -1375,15 +1016,24 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     if cur_best_eval >= beta:
                         break
 
-                if cur_best_eval <= alpha:
-                    alpha = max(-150000.0, alpha - epsilon)
-                    epsilon *= 2
-                    continue
+                if abs(cur_best_eval) < 90000:
+                    if cur_best_eval <= alpha:
+                        #if alpha <= -150000.0:
+                        #    best_move = cur_best_move
+                        #    best_eval = cur_best_eval
+                        #    break
+                        alpha = max(-150000.0, alpha - epsilon)
+                        epsilon *= 2
+                        continue
 
-                elif cur_best_eval >= beta:
-                    beta = min(150000.0, beta + epsilon)
-                    epsilon *= 2
-                    continue
+                    elif cur_best_eval >= beta:
+                        #if beta >= 150000.0:
+                        #    best_move = cur_best_move
+                        #    best_eval = cur_best_eval
+                        #    break
+                        beta = min(150000.0, beta + epsilon)
+                        epsilon *= 2
+                        continue
 
                 best_move = cur_best_move
                 best_eval = cur_best_eval
