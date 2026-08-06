@@ -15,7 +15,7 @@ exception_descriptions = {
 }
 
 while True:
-    result = subprocess.run([sys.executable, "-m", "api_scripts._lichess_bot.py"])
+    result = subprocess.run([sys.executable, "-m", "api_scripts._challenge.py"])
     if result.returncode == KEYBOARD_INTERRUPT:
         break
     elif result.returncode == API_KEY_ERROR:

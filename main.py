@@ -323,7 +323,15 @@ class EvalBoard():
     @property
     def history(self) -> list[chess.Move]:
         return self.board.history
-    
+
+    def is_checkmate(self) -> bool:
+        if self.in_check:
+            return self.board in chess.CHECKMATE
+        return False
+
+    def is_draw(self) -> bool:
+        return self.board in chess.DRAW
+
     def is_game_over(self) -> bool:
         self_board = self.board
         return chess.CHECKMATE.__contains__(self_board) or chess.DRAW.__contains__(self_board)
@@ -434,6 +442,52 @@ def get_best_opening_move(board: EvalBoard) -> chess.Move | None:
     except IndexError:
         return None
 
+def get_tablebase_distance_to_mate(board: EvalBoard, max_plies: int = 500) -> int:
+    sim_board = chs.Board(board.fen())
+    dtm = 0
+
+    while dtm < max_plies:
+        if sim_board.is_checkmate() or sim_board.is_game_over():
+            return dtm
+
+        for move in sim_board.legal_moves:
+            sim_board.push(move)
+            if sim_board.is_checkmate():
+                sim_board.pop()
+                return dtm + 1
+            sim_board.pop()
+
+        best_move = None
+        best_wdl = -math.inf
+        best_dtz = math.inf
+
+        for move in sim_board.legal_moves:
+            sim_board.push(move)
+            try:
+                wdl = -tablebase.probe_wdl(sim_board)
+                dtz = -tablebase.probe_dtz(sim_board)
+            except (syzygy.MissingTableError, Exception):
+                sim_board.pop()
+                continue
+            sim_board.pop()
+
+            if wdl > best_wdl:
+                best_wdl = wdl
+                best_dtz = dtz
+                best_move = move
+            elif wdl == best_wdl:
+                if dtz < best_dtz:
+                    best_dtz = dtz
+                    best_move = move
+
+        if best_move is None:
+            break
+
+        sim_board.push(best_move)
+        dtm += 1
+
+    return dtm
+
 def get_best_tablebase_move(board: EvalBoard) -> tuple[chess.Move, float] | tuple[None, None]:
     global tablebase
 
@@ -535,6 +589,11 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     return pv
 
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
+    if not b.in_check:
+        if b.is_draw():
+            yield None, None, None, None # type: ignore
+            return
+
     tt_entry = tt.get(b.zobrist_hash)
     if tt_entry is not None:
         tt_move = tt_entry.move
@@ -610,6 +669,7 @@ def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generato
             quiets.append((history_side.get(move, 0), move, False, False, move.is_castling(b_board))) # type: ignore
     if moves_searched == 0:
         yield (None, False, False, False) # type: ignore
+        return
 
     winning.sort(key=lambda x: x[0], reverse=True)
     for move in winning:
@@ -763,6 +823,8 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
 
     if b.board in chess.DRAW:
         return 0.0
+    if b.board in chess.CHECKMATE:
+        return -100000.0 + ply
 
     if depth <= 0:
         return quiesce(b, alpha, beta, ply)
@@ -773,12 +835,11 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
         if wdl is not None:
             if wdl == 0 or wdl == 1 or wdl == -1:
                 return 0.0
-            dtz = tablebase.get_dtz(chs_board)
-            if dtz is not None:
-                if wdl > 0:
-                    return 100000.0 - ply - dtz
-                else:
-                    return -100000.0 + ply + dtz
+            dtm = get_tablebase_distance_to_mate(b)
+            if wdl > 0:
+                return 100000.0 - ply - dtm
+            else:
+                return -100000.0 + ply + dtm
     
     in_check = b.in_check
     
@@ -958,7 +1019,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
             if -1 < score < 1:
                 score_str = "cp 0.0"
             else:
-                plies_to_mate = 100000.0 - abs(score)
+                plies_to_mate = get_tablebase_distance_to_mate(b)
                 moves_to_mate = math.ceil(plies_to_mate / 2)
                 if USE_UCI:
                     score_str = f"mate {moves_to_mate}"
@@ -971,6 +1032,8 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     prefix = "-" if b.turn is chess.WHITE else ""
                     score_str = f"{prefix}M{abs(moves_to_mate)}"
             return (gaviota_move, score_str)
+        else:
+            raise ValueError
     
     clean_tt(b)
     clear_history()
