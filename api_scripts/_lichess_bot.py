@@ -26,7 +26,7 @@ UNKNOWN_RESPONSE_EXCEPTION = 102
 
 try:
     with open("lichess-api-key", 'r') as f:
-        TOKEN = f.read()
+        TOKEN = f.read().strip()
 except KeyboardInterrupt:
     raise
 except Exception:
