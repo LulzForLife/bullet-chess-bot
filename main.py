@@ -29,7 +29,7 @@ class TTEntry:
     age: int
 
 class EvalBoard():
-    __slots__ = ("board", "white_phase", "black_phase", "state_stack", "in_check", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
+    __slots__ = ("board", "white_phase", "black_phase", "state_stack", "previous_hashes", "in_check", "ks_w", "qs_w", "ks_b", "qs_b", "piece_count", "zobrist_hash")
 
     def __init__(self) -> None:
         self.board = chess.Board()
@@ -50,6 +50,7 @@ class EvalBoard():
         self.zobrist_hash = hash_board(self.board)
         
         self.state_stack = []
+        self.previous_hashes = {}
     
     def __getitem__(self, key):
         return self.board.__getitem__(key)
@@ -61,7 +62,7 @@ class EvalBoard():
         if turn is chess.WHITE:
             return self.ks_w or self.qs_w
         elif turn is chess.BLACK:
-            return self.ks_b or self.ks_w
+            return self.ks_b or self.qs_b
         raise ValueError
     
     def legal_moves(self) -> list[chess.Move]:
@@ -73,9 +74,11 @@ class EvalBoard():
              self.in_check, self.ks_w, self.qs_w, self.ks_b,
              self.qs_b, self.piece_count, self.zobrist_hash)
         )
+        self_zobrist_hash = self.zobrist_hash
+        self.previous_hashes[self_zobrist_hash] = self.previous_hashes.get(self_zobrist_hash, 0) + 1
 
         poly = POLYGLOT_RANDOM_ARRAY
-        self_zobrist_hash = self.zobrist_hash ^ poly[780]
+        self_zobrist_hash ^= poly[780]
 
         if move is None:
             self.board.apply(move)
@@ -269,7 +272,14 @@ class EvalBoard():
             self.in_check, self.ks_w, self.qs_w, self.ks_b,
             self.qs_b, self.piece_count, self.zobrist_hash
         ) = self.state_stack.pop()
-            
+
+        old_hash = self.zobrist_hash
+        count = self.previous_hashes[old_hash] - 1
+        if count:
+            self.previous_hashes[old_hash] = count
+        else:
+            del self.previous_hashes[old_hash]
+        
         return move
     
     def update_castling_rights(self) -> None:
@@ -291,6 +301,7 @@ class EvalBoard():
         n.update_castling_rights()
         n.update_piece_count()
         n.state_stack = []
+        n.previous_hashes = {}
         n.zobrist_hash = hash_board(n.board)
         return n
     
@@ -300,6 +311,7 @@ class EvalBoard():
         n.white_phase = self.white_phase
         n.black_phase = self.black_phase
         n.state_stack = self.state_stack.copy()
+        n.previous_hashes = self.previous_hashes.copy()
         n.in_check = self.in_check
         n.ks_w, n.qs_w, n.ks_b, n.qs_b = self.ks_w, self.qs_w, self.ks_b, self.qs_b
         n.piece_count = self.piece_count
@@ -339,6 +351,9 @@ class EvalBoard():
     def evaluate(self) -> float:
         return nnue.nnue_evaluate_fen(self.fen())
 
+    def is_2fold_repetition(self) -> bool:
+        return self.previous_hashes.get(self.zobrist_hash, 0) > 0
+
 PIECE_VALUES = {
     chess.KING: 60000,
     chess.QUEEN: 900,
@@ -374,7 +389,7 @@ END = 0
 USE_UCI = "--uci" in sys.argv
 CHECK_EXTENSION = False
 SELF_PLAY = True
-USE_OPENING = True
+USE_OPENING = False
 USE_SYZYGY = True
 PONDER = False
 
@@ -575,7 +590,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
     while True:
         if nb.piece_count <= 5 and USE_SYZYGY:
             bestmove = get_best_tablebase_move(nb)[0]
-        elif b_hash in tt:
+        elif b_hash in tt and tt[b_hash].flag == Flag.EXACT:
             bestmove = tt[b_hash].move
         else:
             break
@@ -591,7 +606,7 @@ def get_pv(b: EvalBoard, move: chess.Move) -> list[str]:
 def order_moves(b: EvalBoard, ply: int, captures_only: bool = False) -> Generator[tuple[chess.Move, bool, bool, bool]]:
     if not b.in_check:
         if b.is_draw():
-            yield None, None, None, None # type: ignore
+            yield None, False, False, False # type: ignore
             return
 
     tt_entry = tt.get(b.zobrist_hash)
@@ -850,6 +865,10 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
     best_move = None
     moves_searched = 0
 
+    if in_tt and b.is_2fold_repetition():
+        in_tt = False
+        entry = None
+
     if in_tt and entry.depth >= depth: # type: ignore
         evaluation = entry.score # type: ignore
 
@@ -896,11 +915,13 @@ def search_moves(b: EvalBoard, depth: int, alpha: float, beta: float, ply: int =
             r = 0
 
         if r != 0 and depth > r:
-            b.apply(None, None, None, None)
-            null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1, False)
-            b.undo()
-            if null_score >= beta:
-                return beta
+            static_eval = b.evaluate()
+            if static_eval >= beta:
+                b.apply(None, None, None, None)
+                null_score = -search_moves(b, depth - 1 - r, -beta, -beta + 1, ply + 1, False)
+                b.undo()
+                if null_score >= beta:
+                    return beta
         
     for move, is_capture, is_promotion, is_castling in order_moves(b, ply):
         if move == excluded_move:
@@ -1040,6 +1061,8 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
     best_move = None
     best_eval = -150000.0
+    cur_best_move = None
+    cur_best_eval = -150000.0
 
     epsilon = INITIAL_EPSILON
 
@@ -1069,6 +1092,8 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
                     b_check.undo()
 
+                    #print(move.san(b_check.board), evaluation, get_pv(b_check, move))
+
                     if evaluation > cur_best_eval:
                         cur_best_eval = evaluation
                         cur_best_move = move
@@ -1081,19 +1106,11 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
 
                 if abs(cur_best_eval) < 90000:
                     if cur_best_eval <= alpha:
-                        #if alpha <= -150000.0:
-                        #    best_move = cur_best_move
-                        #    best_eval = cur_best_eval
-                        #    break
                         alpha = max(-150000.0, alpha - epsilon)
                         epsilon *= 2
                         continue
 
                     elif cur_best_eval >= beta:
-                        #if beta >= 150000.0:
-                        #    best_move = cur_best_move
-                        #    best_eval = cur_best_eval
-                        #    break
                         beta = min(150000.0, beta + epsilon)
                         epsilon *= 2
                         continue
@@ -1128,7 +1145,9 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
     except KeyboardInterrupt:
         raise
     except TimeoutError:
-        ...
+        if cur_best_eval > best_eval and cur_best_move is not None:
+            best_eval = cur_best_eval
+            best_move = cur_best_move
 
     if abs(best_eval) > 90000.0:
         plies_to_mate = 100000.0 - abs(best_eval)

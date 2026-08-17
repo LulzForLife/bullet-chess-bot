@@ -17,6 +17,7 @@ import os
 import http.client
 import json
 import random
+import threading
 
 main.USE_OPENING = True
 main.USE_SYZYGY = os.path.exists("syzygy")
@@ -26,10 +27,14 @@ KEYBOARD_INTERRUPT = 0
 API_KEY_ERROR = 100
 UNKNOWN_BOT_EXCEPTION = 101
 UNKNOWN_RESPONSE_EXCEPTION = 102
+WATCHDOG_CANCEL_ERROR = 103
 
 TIME_CONTROL = "blitz"
 SECONDS = 180
 INC = 0
+TIME_WAIT = 60
+
+UNSUCCESSFUL = []
 
 try:
     with open("lichess-api-key", 'r') as f:
@@ -65,10 +70,10 @@ def get_potential_bots(my_rating: int, rating_diff: int = 300) -> list[str]:
 
             bot = json.loads(line_str)
 
-            blitz_perf = bot.get("perfs", {}).get(TIME_CONTROL, {})
-            blitz_rating = blitz_perf.get("rating", 0)
+            perf = bot.get("perfs", {}).get(TIME_CONTROL, {})
+            rating = perf.get("rating", 0)
 
-            if abs(blitz_rating - my_rating) <= rating_diff:
+            if abs(rating - my_rating) <= rating_diff:
                 username = bot["username"]
                 if username:
                     matching_bots.append(username)
@@ -79,14 +84,35 @@ def get_potential_bots(my_rating: int, rating_diff: int = 300) -> list[str]:
     return matching_bots
 
 def get_random_bot(my_rating: int) -> str:
-    #return "Lulz23"
+
     bots = []
-    rating_diff = 200
+    rating_diff = 100
     while len(bots) < 5:
         bots = get_potential_bots(my_rating, rating_diff)
-        rating_diff += 100
+        for bot in UNSUCCESSFUL:
+            if bot in bots:
+                bots.remove(bot)
+        rating_diff += 50
 
     return random.choice(bots)
+
+def challenge_timeout_watchdog(client: berserk.Client, challenge_id: str, active_flag: dict[str, bool], timeout_sec: int = 15) -> None:
+    start_time = time.time()
+    while time.time() - start_time < timeout_sec:
+        if not active_flag.get("pending", True):
+            return
+        time.sleep(1)
+
+    if active_flag.get("pending", True):
+        print(f"\nOpponent did not respond within {timeout_sec}s. Canceling challenge {challenge_id}...")
+        try:
+            client.challenges.cancel(challenge_id)
+        except berserk.exceptions.ResponseError as e:
+            if e.status_code == 404:
+                print(f"Challenge {challenge_id} doesn't exist. Please restart.")
+                os._exit(WATCHDOG_CANCEL_ERROR)
+        except Exception as e:
+            print(f"Failed to cancel challenge: {e}")
 
 while True:
     try:
@@ -98,8 +124,18 @@ while True:
         print(f"Bot connected successfully as ID: {BOT_ID}")
         print("Listening for challenges and games...")
 
-        opponent = get_random_bot(account['perfs']['blitz']['rating'])
+        opponent = get_random_bot(account['perfs'][TIME_CONTROL]['rating'])
+        UNSUCCESSFUL.append(opponent)
         game = client.challenges.create(opponent, True, SECONDS, INC)
+        challenge_state = {"pending": True}
+
+        timer_thread = threading.Thread(
+            target=challenge_timeout_watchdog,
+            args=(client, game['id'], challenge_state),
+            daemon=True
+        )
+        timer_thread.start()
+
         print(f"\nSent challenge! ID: {game['id']}")
 
         game_colors = {}
@@ -186,31 +222,50 @@ while True:
             elif event['type'] == 'gameFinish':
                 main.END = 0
                 print("\nGame finished!")
+                UNSUCCESSFUL.clear()
                 time.sleep(1)
 
-                opponent = get_random_bot(account['perfs']['blitz']['rating'])
+                opponent = get_random_bot(account['perfs'][TIME_CONTROL]['rating'])
+                UNSUCCESSFUL.append(opponent)
                 game = client.challenges.create(opponent, True, SECONDS, INC)
                 print(f"Sent challenge! ID: {game['id']}")
 
+                challenge_state = {"pending": True}
+                threading.Thread(
+                    target=challenge_timeout_watchdog,
+                    args=(client, game['id'], challenge_state),
+                    daemon=True
+                ).start()
+
             elif event['type'] == 'challengeDeclined' or event['type'] == 'challengeCanceled':
+                challenge_state["pending"] = False
                 main.END = 0
                 print("\nChallenge declined/canceled!")
                 time.sleep(1)
 
-                opponent = get_random_bot(account['perfs']['blitz']['rating'])
+                opponent = get_random_bot(account['perfs'][TIME_CONTROL]['rating'])
+                UNSUCCESSFUL.append(opponent)
                 game = client.challenges.create(opponent, True, SECONDS, INC)
                 print(f"Sent challenge! ID: {game['id']}")
+
+                challenge_state = {"pending": True}
+                threading.Thread(
+                    target=challenge_timeout_watchdog,
+                    args=(client, game['id'], challenge_state),
+                    daemon=True
+                ).start()
 
     except KeyboardInterrupt:
         exit(KEYBOARD_INTERRUPT)
     except berserk.exceptions.ResponseError as e:
         print(f"Encountered Exception: {e}")
-        print(e.cause, e.message, e.reason, e.response, e.status_code, e.args, e.error)
+        print(e.response.headers)
         if e.status_code == 429:
-            print("Waiting 30 seconds...")
-            for t in range(30):
-                print(f"{29 - t} seconds remaining...   ", end='\r')
+            print(f"Waiting {TIME_WAIT} seconds...")
+            for t in range(TIME_WAIT):
+                print(f"{TIME_WAIT - t - 1} seconds remaining...   ", end='\r')
                 time.sleep(1)
+            TIME_WAIT += 30
         elif e.status_code == 400:
             pass
         else:

@@ -3,7 +3,10 @@ import os.path
 
 file_path = os.path.dirname(__file__)
 
-_nnue = ctypes.CDLL(os.path.join(file_path, "libnnueprobe.dll"))
+try:
+    _nnue = ctypes.CDLL(os.path.join(file_path, "libnnueprobe.dll"))
+except OSError:
+    _nnue = ctypes.CDLL(os.path.join(file_path, "libnnueprobe.so"))
 
 _nnue.nnue_init.argtypes = [ctypes.c_char_p]
 _nnue.nnue_init.restype = None
