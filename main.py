@@ -1094,8 +1094,6 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
                     evaluation = -search_moves(b_check, depth - 1, -beta, -current_alpha, 1)
                     b_check.undo()
 
-                    #print(move.san(b_check.board), evaluation, get_pv(b_check, move))
-
                     if evaluation > cur_best_eval:
                         cur_best_eval = evaluation
                         cur_best_move = move
@@ -1140,6 +1138,8 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
             else:
                 if print_info:
                     print(f"Depth: {depth} ({nps}nps)       ", end = "\r")
+            
+            store_tt(b, b.__hash__(), best_move, depth, best_eval, Flag.EXACT)
 
             if abs(best_eval) > 90000.0:
                 break
@@ -1147,9 +1147,7 @@ def get_best_move(b: EvalBoard, time_limit: float = TIME_LIMIT, max_depth: int =
     except KeyboardInterrupt:
         raise
     except TimeoutError:
-        if cur_best_eval > best_eval and cur_best_move is not None:
-            best_eval = cur_best_eval
-            best_move = cur_best_move
+        pass
 
     if abs(best_eval) > 90000.0:
         plies_to_mate = 100000.0 - abs(best_eval)
